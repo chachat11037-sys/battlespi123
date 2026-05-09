@@ -35,6 +35,41 @@ const CARD_DB = [
         effects: []
     },
     {
+        id: "spirit_dragno_scout",
+        name: "ドラグノ偵察兵",
+        type: "spirit",
+        color: "red",
+        family: "竜人",
+        cost: 2,
+        reduction: 1,
+        symbols: 1,
+        lvCosts: [1, 2],
+        bp: [2000, 3000],
+        image: "images/dragno.jpg",
+        effects: [
+            {
+                timing: "attack",
+                type: "self_bp_up",
+                value: 2000,
+                text: "Lv1・Lv2『このスピリットのアタック時』\nこのスピリットをBP+2000する。"
+            }
+        ]
+    },
+    {
+        id: "spirit_ivern",
+        name: "アイバーン",
+        type: "spirit",
+        color: "red",
+        family: "翼竜",
+        cost: 2,
+        reduction: 1,
+        symbols: 1,
+        lvCosts: [1, 4],
+        bp: [2000, 6000],
+        image: "images/ivern.jpg",
+        effects: []
+    },
+    {
         id: "magic_doubledraw",
         name: "ダブルドロー",
         type: "magic",
