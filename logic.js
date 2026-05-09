@@ -442,6 +442,42 @@ function renderCards(side, uiPrefix) {
     const isMe = (uiPrefix === 'self');
     if(!handEl || !fieldEl || !state[side]) return;
 
+    let trashEl = document.getElementById(uiPrefix + '-card-trash');
+    if (!trashEl) {
+        trashEl = document.createElement('div');
+        trashEl.id = uiPrefix + '-card-trash';
+        if (isMe) {
+            trashEl.style.position = 'fixed';
+            trashEl.style.bottom = '20px';
+            trashEl.style.left = '20px';
+        } else {
+            trashEl.style.position = 'fixed';
+            trashEl.style.top = '20px';
+            trashEl.style.left = '20px';
+        }
+        trashEl.style.zIndex = '50';
+        trashEl.style.border = '2px solid #555';
+        trashEl.style.backgroundColor = 'rgba(0,0,0,0.8)';
+        trashEl.style.borderRadius = '8px';
+        trashEl.style.padding = '5px';
+        document.body.appendChild(trashEl);
+    }
+
+    const trashList = state[side].cardTrash || [];
+    if (trashList.length > 0) {
+        const topCard = trashList[trashList.length - 1];
+        const bg = topCard.image ? `background-image:url('${topCard.image}')` : '';
+        const safeCardJson = JSON.stringify(topCard).replace(/'/g, "&#39;");
+        trashEl.innerHTML = `<div style="font-size:10px; color:white; text-align:center; margin-bottom:2px;">トラッシュ(${trashList.length})</div>
+        <div class="card ${topCard.color}" style="${bg}; position:relative; margin:0 auto; cursor:pointer;" onmouseenter='showDetail(${safeCardJson})'>
+            <div class="cost-badge">${topCard.cost}</div>
+            <div style="position:absolute; bottom:5px; width:100%; text-align:center; font-size:10px; font-weight:bold; color:white; text-shadow:1px 1px 2px black; pointer-events:none;">${topCard.name}</div>
+        </div>`;
+    } else {
+        trashEl.innerHTML = `<div style="font-size:10px; color:white; text-align:center; margin-bottom:2px;">トラッシュ(0)</div>
+        <div style="width:60px; height:80px; border:1px dashed #7f8c8d; display:flex; align-items:center; justify-content:center; color:#7f8c8d; font-size:10px; margin:0 auto;">空</div>`;
+    }
+
     handEl.innerHTML = (state[side].hand || []).map((c, i) => {
         if (!isMe) return `<div class="card" style="background:#222; border-color:#444;"></div>`;
         const bg = c.image ? `background-image:url('${c.image}')` : '';
