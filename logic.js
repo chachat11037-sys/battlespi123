@@ -244,8 +244,9 @@ function renderCards(side, uiPrefix) {
 
         const safeCardJson = JSON.stringify(c).replace(/'/g, "&#39;");
         return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg}" onclick="onCardClick('${side}', ${i}, 'field')" onmouseenter='showDetail(${safeCardJson})'>
+            <div class="cost-badge">${c.cost}</div>
             <div class="core-display">● ${c.cores}</div>
-            <div style="position:absolute; bottom:5px; width:100%; text-align:center; font-size:11px; font-weight:bold; color:white; text-shadow:1px 1px 2px black; pointer-events:none;">Lv${currentLv} ${currentBp}</div>
+            <div style="position:absolute; top:45%; width:100%; text-align:center; font-size:12px; font-weight:bold; color:white; text-shadow:1px 1px 2px black, 0px 0px 3px black; pointer-events:none;">Lv${currentLv} ${currentBp}</div>
             <div class="card-btns" style="display:${isMe?'flex':'none'}">
                 <button onclick="event.stopPropagation(); changeCore('${side}',${i},1)">+</button>
                 <button onclick="event.stopPropagation(); changeCore('${side}',${i},-1)">-</button>
