@@ -110,11 +110,33 @@ function getCardStats(card) {
     return { lv: currentLv, bpDisp: currentBpDisp, bpNum: currentBpNum };
 }
 
+function cancelEffect() {
+    if (state.pendingEffect && state.pendingEffect.player === state.myRole) {
+        state.pendingEffect = null;
+        syncToFirebase();
+    }
+}
+
 function destroyCard(side, idx) {
     const destroyed = state[side].field.splice(idx, 1)[0];
     state[side].reserve += destroyed.cores;
     destroyed.cores = 0;
     state[side].cardTrash.push(destroyed);
+
+    if (destroyed.effects) {
+        destroyed.effects.forEach(eff => {
+            if (eff.timing === 'destroyed') {
+                if (eff.type === 'destroy_bp') {
+                    state.pendingEffect = {
+                        player: side,
+                        type: 'destroy_bp',
+                        value: eff.value,
+                        text: `${destroyed.name}の効果：BP${eff.value}以下の相手スピリットを選んで破壊してください`
+                    };
+                }
+            }
+        });
+    }
 }
 
 function resolveBattle(blockerIdx) {
@@ -157,16 +179,91 @@ function takeLifeDamage() {
 }
 
 function onCardClick(side, idx, type) {
+    if (state.pendingEffect) {
+        if (state.pendingEffect.player !== state.myRole) {
+            alert("相手が効果対象を選択中です。");
+            return;
+        }
+        if (type === 'field' && side !== state.myRole) {
+            const targetCard = state[side].field[idx];
+            if (!targetCard) return;
+
+            if (state.pendingEffect.type === 'destroy_bp') {
+                const stats = getCardStats(targetCard);
+                if (stats.bpNum > 0 && stats.bpNum <= state.pendingEffect.value) {
+                    destroyCard(side, idx);
+                    state.pendingEffect = null;
+                    syncToFirebase();
+                } else {
+                    alert(`BP${state.pendingEffect.value}以下ではありません！`);
+                }
+            }
+        } else {
+            alert("効果の対象となる相手のスピリットを選択してください。");
+        }
+        return;
+    }
+
     if (side !== state.myRole || !state[side]) return; 
     
     if (type === 'hand') {
+        const card = state[side].hand[idx];
+        if (!card) return;
+
+        if (card.type === 'magic') {
+            if (state.currentTurn !== state.myRole || steps[state.currentStep] !== "メイン") {
+                alert("マジックは自分のメインステップでのみ使用可能です！");
+                return;
+            }
+
+            const syms = getSyms(side);
+            const cost = Math.max(0, (card.cost || 0) - getReduction(card, syms));
+            const fieldCores = (state[side].field || []).reduce((sum, c) => sum + (c.cores || 0), 0);
+            const totalCores = (state[side].reserve || 0) + fieldCores;
+
+            if (totalCores >= cost) {
+                let remains = cost;
+                const fromRes = Math.min(state[side].reserve, remains);
+                state[side].reserve -= fromRes;
+                remains -= fromRes;
+                
+                if (remains > 0 && state[side].field) {
+                    for (let i = state[side].field.length - 1; i >= 0; i--) {
+                        const fCard = state[side].field[i];
+                        const take = Math.min(fCard.cores, remains);
+                        fCard.cores -= take;
+                        remains -= take;
+                        if (fCard.cores < (fCard.lvCosts[0] || 1)) {
+                            destroyCard(side, i);
+                        }
+                        if (remains <= 0) break;
+                    }
+                }
+                state[side].trash += cost;
+
+                if (card.effects) {
+                    card.effects.forEach(eff => {
+                        if (eff.type === 'draw') {
+                            for(let d=0; d<eff.amount; d++) {
+                                if(state[side].deck.length > 0) state[side].hand.push(state[side].deck.pop());
+                            }
+                        }
+                    });
+                }
+
+                const castMagic = state[side].hand.splice(idx, 1)[0];
+                state[side].cardTrash.push(castMagic);
+                syncToFirebase();
+            } else {
+                alert(`コア不足: 必要 ${cost} / 所持 ${totalCores}`);
+            }
+            return;
+        }
+
         if (state.currentTurn !== state.myRole || steps[state.currentStep] !== "メイン") {
             alert("召喚は自分のメインステップでのみ可能です！");
             return;
         }
-
-        const card = state[side].hand[idx];
-        if (!card || card.type === 'magic') return;
 
         const syms = getSyms(side);
         const cost = Math.max(0, (card.cost || 0) - getReduction(card, syms));
@@ -228,6 +325,7 @@ function onCardClick(side, idx, type) {
 }
 
 function changeCore(side, idx, amt) {
+    if (state.pendingEffect) return alert("効果処理中です");
     if (side !== state.myRole || !state[side] || !state[side].field || !state[side].field[idx]) return;
     
     if (state.currentTurn !== state.myRole || steps[state.currentStep] !== "メイン") {
@@ -248,6 +346,7 @@ function changeCore(side, idx, amt) {
 }
 
 function handleNextStep() {
+    if (state.pendingEffect) return alert("効果を解決してください");
     if (state.currentTurn !== state.myRole) return alert("相手のターンです");
     if (state.battle.isAttacking) return alert("バトルを解決してください");
     
@@ -313,7 +412,18 @@ function updateUI() {
         document.body.appendChild(battleBtn);
     }
     
-    if (state.battle.isAttacking && !isMyTurn) {
+    if (state.pendingEffect) {
+        if (state.pendingEffect.player === state.myRole) {
+            battleBtn.innerHTML = `
+                <div style="display:flex; flex-direction:column; align-items:center; gap:10px; background-color:rgba(155, 89, 182, 0.9); padding:20px; border-radius:10px; box-shadow: 0 4px 10px rgba(0,0,0,0.7);">
+                    <div style="font-size:18px; font-weight:bold; color:#fff;">${state.pendingEffect.text}</div>
+                    <button onclick="cancelEffect()" style="padding:10px 20px; font-size:14px; background-color:#e74c3c; color:white; border:none; border-radius:5px; cursor:pointer;">対象なし / キャンセル</button>
+                </div>
+            `;
+        } else {
+            battleBtn.innerHTML = `<div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#7f8c8d; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手が効果対象を選択中...</div>`;
+        }
+    } else if (state.battle.isAttacking && !isMyTurn) {
         battleBtn.innerHTML = `<button onclick="takeLifeDamage()" style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#e74c3c; color:white; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">ライフで受ける</button>`;
     } else if (state.battle.isAttacking && isMyTurn) {
         battleBtn.innerHTML = `<div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#f39c12; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手の対応を待っています...</div>`;
@@ -350,6 +460,10 @@ function renderCards(side, uiPrefix) {
         let borderStyle = "";
         if (state.battle.isAttacking && state.battle.attackerIdx === i && side === state.currentTurn) {
             borderStyle = "box-shadow: 0 0 15px 5px red;";
+        }
+        
+        if (state.pendingEffect && state.pendingEffect.player === state.myRole && side !== state.myRole) {
+            borderStyle = "box-shadow: 0 0 15px 5px #9b59b6; cursor: crosshair;";
         }
 
         return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg} ${borderStyle}" onclick="onCardClick('${side}', ${i}, 'field')" onmouseenter='showDetail(${safeCardJson})'>
