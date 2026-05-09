@@ -150,5 +150,34 @@ const CARD_DB = [
                 text: "【フラッシュ】このターンの間、スピリット1体をBP+2000する。"
             }
         ]
+    },
+    {
+        id: "nexus_hunting_village",
+        name: "狩る者の集落",
+        type: "nexus",
+        color: "red",
+        cost: 3,
+        reduction: 2,
+        symbols: 1,
+        lvCosts: [0, 2],
+        bp: null,
+        image: "images/huntingvillage.jpg",
+        effects: [
+            {
+                timing: "constant",
+                type: "global_bp_up_red_spirit",
+                reqLv: 1,
+                step: "アタック",
+                value: 2000,
+                text: "Lv1・Lv2『自分のアタックステップ』\n自分の赤のスピリットすべてをBP+2000する。"
+            },
+            {
+                timing: "on_life_decrease",
+                type: "destroy_bp",
+                reqLv: 2,
+                value: 4000,
+                text: "Lv2『相手のアタックステップ』\n相手によって自分のライフが減ったとき、BP4000以下の相手のスピリット1体を破壊する。"
+            }
+        ]
     }
 ];
