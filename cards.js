@@ -179,5 +179,27 @@ const CARD_DB = [
                 text: "Lv2『相手のアタックステップ』\n相手によって自分のライフが減ったとき、BP4000以下の相手のスピリット1体を破壊する。"
             }
         ]
+    },
+    {
+        id: "ultimate_goradon",
+        name: "アルティメット・ゴラドン",
+        type: "ultimate",
+        color: "red",
+        family: "新生・爬獣",
+        cost: 4,
+        reduction: 2,
+        symbols: 1,
+        lvCosts: [1, 3, 5],
+        lvNames: [3, 4, 5],
+        bp: [6000, 9000, 11000],
+        image: "images/goradon.jpg",
+        effects: [
+            {
+                timing: "attack",
+                type: "u_trigger",
+                reqLv: 2,
+                text: "【Uトリガー】Lv4・Lv5『このアルティメットのアタック時』\nUトリガーがヒットしたとき、相手のスピリットは可能ならブロックする。\n相手のスピリットにブロックされたら、相手のライフのコア1個を相手のリザーブに置く。"
+            }
+        ]
     }
 ];
