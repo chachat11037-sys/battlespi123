@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Batspi Online - Dev Edition</title>
+    <style>
+        /* 基本レイアウト */
+        * { box-sizing: border-box; }
+        body { background-color: #05050a; color: #f0f0f0; font-family: sans-serif; margin: 0; padding: 0; height: 100vh; overflow: hidden; display: flex; }
+        
+        /* 起動時オーバーレイ */
+        #setup-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
+        .menu-card { background: #111; border: 2px solid #444; border-radius: 15px; padding: 30px; display: flex; flex-direction: column; gap: 15px; width: 400px; text-align: center; }
+        #room-select-container { display: none; width: 400px; background: #111; border: 2px solid #444; padding: 20px; border-radius: 15px; text-align: center; }
+        
+        .mode-btn { padding: 12px; font-size: 16px; cursor: pointer; background: #1e3a5f; color: white; border: 1px solid #3e5a7f; border-radius: 8px; font-weight: bold; width: 100%; margin-top: 10px; transition: 0.2s; }
+        .mode-btn:hover { background: #2a4e7a; }
+        .room-input { padding: 10px; width: 100%; font-size: 18px; text-align: center; background: #000; color: #fff; border: 1px solid #555; border-radius: 5px; margin-top: 10px; }
+
+        /* サイドパネル（詳細表示） */
+        #side-panel { width: 280px; background: #101025; border-right: 2px solid #333; display: flex; flex-direction: column; padding: 10px; z-index: 100; overflow-y: auto; }
+        #detail-img-container { width: 100%; aspect-ratio: 1 / 1.4; background: #000; border: 2px solid #444; margin-bottom: 10px; border-radius: 8px; background-size: cover; background-position: center; }
+        .detail-lv-table { width: 100%; border-collapse: collapse; margin-top: 5px; background: rgba(0,0,0,0.3); font-size: 10px; color: #fff; }
+        .detail-lv-table td { padding: 4px; border-bottom: 1px solid #333; text-align: center; }
+        #trash-viewer { margin-top: auto; border-top: 2px solid #444; padding-top: 5px; }
+        .trash-list { display: flex; gap: 4px; overflow-x: auto; height: 65px; margin-bottom: 10px; }
+
+        /* ゲームエリア */
+        #game-container { flex: 1; display: flex; flex-direction: column; padding: 5px; height: 100vh; }
+        .game-board { flex: 1; display: flex; flex-direction: column; gap: 2px; height: 100%; }
+        .player-area { flex: 1; display: flex; flex-direction: column; border-radius: 8px; padding: 4px; position: relative; min-height: 0; }
+        .status-bar { display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.8); padding: 3px 12px; border-radius: 4px; font-size: 11px; }
+        .life-box { color: #ffd700; font-weight: bold; border: 2px solid #ffd700; padding: 2px 12px; border-radius: 15px; font-size: 14px; }
+        
+        .field { flex: 1; display: flex; justify-content: center; align-items: center; gap: 40px; border-top: 1px dashed rgba(255,255,255,0.1); border-bottom: 1px dashed rgba(255,255,255,0.1); overflow-x: auto; }
+        .hand { display: flex; justify-content: center; gap: 8px; height: 110px; padding: 2px; }
+
+        /* カードデザイン */
+        .card { width: 80px; height: 112px; border: 2px solid #666; border-radius: 6px; background: #101020; display: flex; flex-direction: column; align-items: center; position: relative; cursor: pointer; transition: transform 0.2s; background-size: cover; background-position: center; overflow: hidden; }
+        .card::before { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,0.3); pointer-events: none; }
+        .card.red { border-color: #ff4d4d; } .card.blue { border-color: #4d94ff; }
+        .card.exhausted { transform: rotate(-90deg); filter: brightness(0.6); }
+        .bp-main { position: absolute; top: 30px; width: 100%; text-align: center; font-weight: bold; color: #fff; text-shadow: 1px 1px 3px #000; font-size: 9px; z-index: 5; }
+        .cost-badge { position: absolute; top: 2px; left: 2px; background: #fff; color: #000; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 11px; z-index: 10; }
+        .core-display { background: #007bff; color: #fff; padding: 1px 8px; border-radius: 10px; margin-top: auto; margin-bottom: 5px; font-weight: bold; font-size: 12px; z-index: 10; border: 1px solid #fff; }
+        .card-btns { display: flex; gap: 4px; margin-bottom: 4px; z-index: 20; }
+        .card-btns button { width: 22px; height: 22px; padding: 0; font-size: 14px; cursor: pointer; border-radius: 4px; background: #444; color: #fff; border: 1px solid #666; }
+
+        /* 中央コントロール */
+        .center-ctrl { display: flex; justify-content: center; align-items: center; gap: 20px; padding: 8px; background: #1a1a1a; border-top: 2px solid #333; border-bottom: 2px solid #333; }
+        .step-indicator { display: flex; gap: 5px; }
+        .step-tag { padding: 4px 10px; font-size: 11px; border-radius: 4px; background: #333; color: #888; font-weight: bold; border: 1px solid #444; }
+        .step-tag.active { background: #e67e22; color: #fff; border-color: #ff9f43; box-shadow: 0 0 10px rgba(230, 126, 34, 0.5); }
+    </style>
+</head>
+<body>
+
+<div id="setup-overlay">
+    <div id="main-menu" class="menu-card">
+        <h1>Batspi Online</h1>
+        <button class="mode-btn" onclick="showRoomSelect()">対戦ルームに入る</button>
+    </div>
+
+    <div id="room-select-container" class="menu-card">
+        <h3>対戦ルーム設定</h3>
+        <p style="font-size: 12px;">同じ合言葉を入力して繋がります</p>
+        <input type="text" id="room-id-input" class="room-input" placeholder="合言葉 (例: 1234)">
+        <div style="display: flex; gap: 10px; margin-top: 15px;">
+            <button class="mode-btn" onclick="joinGame('p1')" style="background: #e67e22;">先攻(P1)で参加</button>
+            <button class="mode-btn" onclick="joinGame('p2')" style="background: #3e5a7f;">後攻(P2)で参加</button>
+        </div>
+    </div>
+</div>
+
+<div id="side-panel">
+    <div id="detail-img-container"></div>
+    <div id="detail-content">
+        <div id="d-name" style="font-size:18px; font-weight:bold; color:#e67e22;">詳細</div>
+        <div id="d-effect" style="font-size:11px; color:#ddd; margin:10px 0; white-space: pre-wrap; background:rgba(0,0,0,0.5); padding:8px; border-radius:5px;"></div>
+        <div style="font-size:12px; display:grid; grid-template-columns: 1fr 1fr; gap:5px;">
+            <div>種別: <span id="d-type-attr">-</span></div>
+            <div>属性: <span id="d-family-attr">-</span></div>
+            <div>コスト: <span id="d-cost-attr">-</span></div>
+            <div>軽減: <span id="d-red-attr">-</span></div>
+        </div>
+        <table class="detail-lv-table" style="margin-top:10px;">
+            <thead><tr style="background:#333;"><td>Lv</td><td>コア</td><td>BP</td></tr></thead>
+            <tbody id="d-lv-body"></tbody>
+        </table>
+    </div>
+    <div id="trash-viewer">
+        <div style="color:#ff4d4d; font-size:10px;">OPP TRASH</div>
+        <div id="trash-opp" class="trash-list"></div>
+        <div style="color:#4d94ff; font-size:10px;">MY TRASH</div>
+        <div id="trash-self" class="trash-list"></div>
+    </div>
+</div>
+
+<div id="game-container">
+    <div class="game-board">
+        <div class="player-area" id="area-opp">
+            <div id="opp-hand" class="hand"></div>
+            <div id="opp-field" class="field"></div>
+            <div class="status-bar">
+                <span>相手: <span id="opp-rsym" style="color:#ff4d4d">R0</span> <span id="opp-bsym" style="color:#4d94ff">B0</span></span>
+                <div class="life-box" id="opp-life">5</div>
+                <div id="opp-res" style="font-weight:bold; color:#007bff;">R:0</div>
+            </div>
+        </div>
+
+        <div class="center-ctrl">
+            <div id="turn-txt" style="font-size:12px; font-weight:bold; min-width:120px; text-align:center;">TURN</div>
+            <!-- ステップ表示エリア -->
+            <div class="step-indicator" id="step-display"></div>
+            <button class="mode-btn" style="padding:8px 20px; width: auto; margin:0;" id="next-btn" onclick="handleNextStep()">進む</button>
+        </div>
+
+        <div class="player-area" id="area-self">
+            <div class="status-bar">
+                <span>自分: <span id="self-rsym" style="color:#ff4d4d">R0</span> <span id="self-bsym" style="color:#4d94ff">B0</span></span>
+                <div class="life-box" id="self-life">5</div>
+                <div id="self-res" style="font-weight:bold; color:#007bff;">R:0</div>
+            </div>
+            <div id="self-field" class="field"></div>
+            <div id="self-hand" class="hand"></div>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
+    import { getDatabase, ref, set, onValue, update } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-database.js";
+
+    const firebaseConfig = {
+        apiKey: "AIzaSyD4KWBMOHEX3-VSlYCxVyzNHk3WRL9vsw8",
+        authDomain: "battlespirits-ad80d.firebaseapp.com",
+        databaseURL: "https://battlespirits-ad80d-default-rtdb.asia-southeast1.firebasedatabase.app/",
+        projectId: "battlespirits-ad80d",
+        storageBucket: "battlespirits-ad80d.firebasestorage.app",
+        messagingSenderId: "268834051205",
+        appId: "1:268834051205:web:73991b90245633e3ca45ec"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    window.fbSync = { db, ref, set, onValue, update };
+</script>
+
+<script src="cards.js"></script>
+<script src="logic.js"></script>
+</body>
+</html>
