@@ -3,7 +3,7 @@ const getInitialState = () => ({
     p2: { life: 5, reserve: 4, trash: 0, hand: [], field: [], cardTrash: [], deck: [] },
     currentTurn: 'p1', 
     currentStep: 0, 
-    battle: { attackerId: null, defenderId: null, status: 'idle', flashTurn: null, passCount: 0 },
+    battle: { isAttacking: false, attackerIdx: null },
     pendingEffect: null, 
     turnCount: 1, 
     roomId: null, 
@@ -39,6 +39,7 @@ function joinGame(role) {
                 data[p].deck = data[p].deck || [];
                 data[p].cardTrash = data[p].cardTrash || [];
             });
+            if (!data.battle) data.battle = { isAttacking: false, attackerIdx: null };
 
             const oldRole = state.myRole;
             state = data;
@@ -90,6 +91,71 @@ function getReduction(card, mySyms) {
     return Math.min(rRed, mySyms.red) + Math.min(rBlue, mySyms.blue);
 }
 
+function getCardStats(card) {
+    let currentLv = 1;
+    let currentBpNum = 0;
+    let currentBpDisp = "-";
+    
+    if (card.lvCosts && card.bp) {
+        for (let lvIndex = card.lvCosts.length - 1; lvIndex >= 0; lvIndex--) {
+            if (card.cores >= card.lvCosts[lvIndex]) {
+                currentLv = lvIndex + 1;
+                currentBpDisp = card.bp[lvIndex];
+                currentBpNum = currentBpDisp === '-' ? 0 : parseInt(currentBpDisp, 10);
+                if (isNaN(currentBpNum)) currentBpNum = 0;
+                break;
+            }
+        }
+    }
+    return { lv: currentLv, bpDisp: currentBpDisp, bpNum: currentBpNum };
+}
+
+function destroyCard(side, idx) {
+    const destroyed = state[side].field.splice(idx, 1)[0];
+    state[side].reserve += destroyed.cores;
+    destroyed.cores = 0;
+    state[side].cardTrash.push(destroyed);
+}
+
+function resolveBattle(blockerIdx) {
+    const attackerSide = state.currentTurn;
+    const defenderSide = state.myRole;
+    const attackerIdx = state.battle.attackerIdx;
+
+    const attacker = state[attackerSide].field[attackerIdx];
+    const blocker = state[defenderSide].field[blockerIdx];
+
+    const aStats = getCardStats(attacker);
+    const bStats = getCardStats(blocker);
+
+    if (aStats.bpNum > bStats.bpNum) {
+        destroyCard(defenderSide, blockerIdx);
+    } else if (bStats.bpNum > aStats.bpNum) {
+        destroyCard(attackerSide, attackerIdx);
+    } else {
+        destroyCard(defenderSide, blockerIdx);
+        destroyCard(attackerSide, attackerIdx);
+    }
+
+    state.battle.isAttacking = false;
+    state.battle.attackerIdx = null;
+    syncToFirebase();
+}
+
+function takeLifeDamage() {
+    if (state.currentTurn === state.myRole || !state.battle.isAttacking) return;
+    const me = state.myRole;
+    const attackerSide = state.currentTurn;
+    const attackerCard = state[attackerSide].field[state.battle.attackerIdx];
+    
+    const dmg = attackerCard.symbols || 1;
+    state[me].life -= dmg;
+    
+    state.battle.isAttacking = false;
+    state.battle.attackerIdx = null;
+    syncToFirebase();
+}
+
 function onCardClick(side, idx, type) {
     if (side !== state.myRole || !state[side]) return; 
     
@@ -118,8 +184,7 @@ function onCardClick(side, idx, type) {
                     fCard.cores -= take;
                     remains -= take;
                     if (fCard.cores < (fCard.lvCosts[0] || 1)) {
-                        const gone = state[side].field.splice(i, 1)[0];
-                        state[side].cardTrash.push(gone);
+                        destroyCard(side, i);
                     }
                     if (remains <= 0) break;
                 }
@@ -134,7 +199,29 @@ function onCardClick(side, idx, type) {
             alert(`コア不足: 必要 ${cost + minCore} / 所持 ${totalCores}`);
         }
     } else if (type === 'field' && state[side].field && state[side].field[idx]) {
-        state[side].field[idx].isExhausted = !state[side].field[idx].isExhausted;
+        
+        if (steps[state.currentStep] === "アタック") {
+            if (state.currentTurn === state.myRole && side === state.myRole) {
+                if (!state[side].field[idx].isExhausted && !state.battle.isAttacking) {
+                    state[side].field[idx].isExhausted = true;
+                    state.battle.isAttacking = true;
+                    state.battle.attackerIdx = idx;
+                    syncToFirebase();
+                    return;
+                }
+            }
+            if (state.currentTurn !== state.myRole && side === state.myRole && state.battle.isAttacking) {
+                if (!state[side].field[idx].isExhausted) {
+                    state[side].field[idx].isExhausted = true;
+                    resolveBattle(idx);
+                    return;
+                }
+            }
+        }
+        
+        if (!state.battle.isAttacking) {
+            state[side].field[idx].isExhausted = !state[side].field[idx].isExhausted;
+        }
     }
     syncToFirebase();
 }
@@ -147,8 +234,7 @@ function changeCore(side, idx, amt) {
     } else if (amt < 0 && c.cores > 0) {
         c.cores--; state[side].reserve++;
         if (c.cores < (c.lvCosts ? c.lvCosts[0] : 1)) {
-            const trashed = state[side].field.splice(idx, 1)[0];
-            state[side].cardTrash.push(trashed);
+            destroyCard(side, idx);
         }
     }
     syncToFirebase();
@@ -156,6 +242,7 @@ function changeCore(side, idx, amt) {
 
 function handleNextStep() {
     if (state.currentTurn !== state.myRole) return alert("相手のターンです");
+    if (state.battle.isAttacking) return alert("バトルを解決してください");
     
     state.currentStep++;
     if (state.currentStep >= steps.length) {
@@ -206,6 +293,27 @@ function updateUI() {
         tTxt.innerText = isMyTurn ? "YOUR TURN" : "OPPONENT'S TURN";
         tTxt.style.color = isMyTurn ? "#2ecc71" : "#e74c3c";
     }
+    
+    let battleBtn = document.getElementById('battle-btn-container');
+    if (!battleBtn) {
+        battleBtn = document.createElement('div');
+        battleBtn.id = 'battle-btn-container';
+        battleBtn.style.position = 'fixed';
+        battleBtn.style.top = '50%';
+        battleBtn.style.left = '50%';
+        battleBtn.style.transform = 'translate(-50%, -50%)';
+        battleBtn.style.zIndex = '9999';
+        document.body.appendChild(battleBtn);
+    }
+    
+    if (state.battle.isAttacking && !isMyTurn) {
+        battleBtn.innerHTML = `<button onclick="takeLifeDamage()" style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#e74c3c; color:white; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">ライフで受ける</button>`;
+    } else if (state.battle.isAttacking && isMyTurn) {
+        battleBtn.innerHTML = `<div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#f39c12; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手の対応を待っています...</div>`;
+    } else {
+        battleBtn.innerHTML = '';
+    }
+
     renderCards(me, 'self');
     renderCards(opp, 'opp');
     updateStepUI();
@@ -229,24 +337,18 @@ function renderCards(side, uiPrefix) {
 
     fieldEl.innerHTML = (state[side].field || []).map((c, i) => {
         const bg = c.image ? `background-image:url('${c.image}')` : '';
+        const stats = getCardStats(c);
+        const safeCardJson = JSON.stringify(c).replace(/'/g, "&#39;");
         
-        let currentLv = 1;
-        let currentBp = "-";
-        if (c.lvCosts && c.bp) {
-            for (let lvIndex = c.lvCosts.length - 1; lvIndex >= 0; lvIndex--) {
-                if (c.cores >= c.lvCosts[lvIndex]) {
-                    currentLv = lvIndex + 1;
-                    currentBp = c.bp[lvIndex];
-                    break;
-                }
-            }
+        let borderStyle = "";
+        if (state.battle.isAttacking && state.battle.attackerIdx === i && side === state.currentTurn) {
+            borderStyle = "box-shadow: 0 0 15px 5px red;";
         }
 
-        const safeCardJson = JSON.stringify(c).replace(/'/g, "&#39;");
-        return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg}" onclick="onCardClick('${side}', ${i}, 'field')" onmouseenter='showDetail(${safeCardJson})'>
+        return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg} ${borderStyle}" onclick="onCardClick('${side}', ${i}, 'field')" onmouseenter='showDetail(${safeCardJson})'>
             <div class="cost-badge">${c.cost}</div>
             <div class="core-display">● ${c.cores}</div>
-            <div style="position:absolute; top:45%; width:100%; text-align:center; font-size:12px; font-weight:bold; color:white; text-shadow:1px 1px 2px black, 0px 0px 3px black; pointer-events:none;">Lv${currentLv} ${currentBp}</div>
+            <div style="position:absolute; top:35%; width:100%; text-align:center; font-size:12px; font-weight:bold; color:white; text-shadow:1px 1px 2px black, 0px 0px 3px black; pointer-events:none;">Lv${stats.lv} ${stats.bpDisp}</div>
             <div class="card-btns" style="display:${isMe?'flex':'none'}">
                 <button onclick="event.stopPropagation(); changeCore('${side}',${i},1)">+</button>
                 <button onclick="event.stopPropagation(); changeCore('${side}',${i},-1)">-</button>
