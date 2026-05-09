@@ -647,6 +647,74 @@ function handleNextStep() {
     syncToFirebase();
 }
 
+function openTrashModal(side) {
+    let modal = document.getElementById('trash-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'trash-modal';
+        modal.style.position = 'fixed';
+        modal.style.top = '10%';
+        modal.style.left = '10%';
+        modal.style.width = '80%';
+        modal.style.height = '80%';
+        modal.style.backgroundColor = 'rgba(0,0,0,0.95)';
+        modal.style.zIndex = '10000';
+        modal.style.borderRadius = '10px';
+        modal.style.padding = '20px';
+        modal.style.overflowY = 'auto';
+        modal.style.display = 'none';
+        
+        const closeBtn = document.createElement('button');
+        closeBtn.innerText = '閉じる';
+        closeBtn.style.position = 'absolute';
+        closeBtn.style.top = '20px';
+        closeBtn.style.right = '20px';
+        closeBtn.style.padding = '10px 20px';
+        closeBtn.style.fontSize = '16px';
+        closeBtn.style.backgroundColor = '#e74c3c';
+        closeBtn.style.color = 'white';
+        closeBtn.style.border = 'none';
+        closeBtn.style.borderRadius = '5px';
+        closeBtn.style.cursor = 'pointer';
+        closeBtn.onclick = () => modal.style.display = 'none';
+        
+        const title = document.createElement('div');
+        title.id = 'trash-modal-title';
+        title.style.color = 'white';
+        title.style.fontSize = '24px';
+        title.style.fontWeight = 'bold';
+        title.style.marginBottom = '20px';
+        
+        const container = document.createElement('div');
+        container.id = 'trash-modal-container';
+        container.style.display = 'flex';
+        container.style.flexWrap = 'wrap';
+        container.style.gap = '10px';
+        
+        modal.appendChild(closeBtn);
+        modal.appendChild(title);
+        modal.appendChild(container);
+        document.body.appendChild(modal);
+    }
+    
+    const title = document.getElementById('trash-modal-title');
+    title.innerText = (side === state.myRole ? '自分のトラッシュ' : '相手のトラッシュ');
+    
+    const container = document.getElementById('trash-modal-container');
+    const trashList = state[side].cardTrash || [];
+    
+    container.innerHTML = trashList.map((c, i) => {
+        const bg = c.image ? `background-image:url('${c.image}')` : '';
+        const safeCardJson = JSON.stringify(c).replace(/'/g, "&#39;");
+        return `<div class="card ${c.color}" style="${bg}; position:relative;" onmouseenter='showDetail(${safeCardJson})'>
+            <div class="cost-badge">${c.cost}</div>
+            <div style="position:absolute; bottom:5px; width:100%; text-align:center; font-size:10px; font-weight:bold; color:white; text-shadow:1px 1px 2px black; pointer-events:none;">${c.name}</div>
+        </div>`;
+    }).join('');
+    
+    modal.style.display = 'block';
+}
+
 function updateUI() {
     const me = getMySide();
     const opp = getOppSide();
@@ -784,19 +852,20 @@ function renderCards(side, uiPrefix) {
         document.body.appendChild(trashEl);
     }
 
+    trashEl.onclick = () => openTrashModal(side);
+
     const trashList = state[side].cardTrash || [];
     if (trashList.length > 0) {
         const topCard = trashList[trashList.length - 1];
         const bg = topCard.image ? `background-image:url('${topCard.image}')` : '';
         trashEl.innerHTML = `<div style="font-size:10px; color:white; text-align:center; margin-bottom:2px;">トラッシュ(${trashList.length})</div>
-        <div class="card ${topCard.color}" style="${bg}; position:relative; margin:0 auto;" onmouseenter="showDetail(state['${side}'].cardTrash[${trashList.length - 1}])">
+        <div class="card ${topCard.color}" style="${bg}; position:relative; margin:0 auto;">
             <div class="cost-badge">${topCard.cost}</div>
             <div style="position:absolute; bottom:5px; width:100%; text-align:center; font-size:10px; font-weight:bold; color:white; text-shadow:1px 1px 2px black; pointer-events:none;">${topCard.name}</div>
         </div>`;
     } else {
         trashEl.innerHTML = `<div style="font-size:10px; color:white; text-align:center; margin-bottom:2px;">トラッシュ(0)</div>
         <div style="width:60px; height:80px; border:1px dashed #7f8c8d; display:flex; align-items:center; justify-content:center; color:#7f8c8d; font-size:10px; margin:0 auto;">空</div>`;
-        trashEl.onmouseenter = null;
     }
 
     handEl.innerHTML = (state[side].hand || []).map((c, i) => {
