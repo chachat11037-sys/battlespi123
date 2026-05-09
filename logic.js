@@ -84,18 +84,23 @@ function getMySide() { return state.myRole || 'p1'; }
 function getOppSide() { return state.myRole === 'p1' ? 'p2' : 'p1'; }
 
 function getSyms(p) { 
-    if (!state[p] || !state[p].field) return {red:0, blue:0};
+    const base = {red:0, blue:0, green:0, yellow:0, purple:0, white:0};
+    if (!state[p] || !state[p].field) return base;
     return state[p].field.reduce((acc, c) => { 
         if (c && c.color) acc[c.color] = (acc[c.color] || 0) + (c.symbols || 1); 
         return acc; 
-    }, {red:0, blue:0}); 
+    }, base); 
 }
 
 function getReduction(card, mySyms) {
     if (!card || !mySyms) return 0;
-    const rRed = card.reductionSyms ? (card.reductionSyms.red || 0) : (card.color === 'red' ? (card.reduction || 0) : 0);
-    const rBlue = card.reductionSyms ? (card.reductionSyms.blue || 0) : (card.color === 'blue' ? (card.reduction || 0) : 0);
-    return Math.min(rRed, mySyms.red) + Math.min(rBlue, mySyms.blue);
+    let total = 0;
+    const colors = ['red', 'blue', 'green', 'yellow', 'purple', 'white'];
+    colors.forEach(col => {
+        const r = card.reductionSyms ? (card.reductionSyms[col] || 0) : (card.color === col ? (card.reduction || 0) : 0);
+        total += Math.min(r, mySyms[col] || 0);
+    });
+    return total;
 }
 
 function getCardStats(card, side, currentState) {
@@ -470,6 +475,15 @@ function handleNextStep() {
     if (state.battle.isAttacking) return alert("バトルを解決してください");
     
     state.currentStep++;
+
+    if (state.turnCount === 1) {
+        if (steps[state.currentStep] === "コア") {
+            state.currentStep++;
+        } else if (steps[state.currentStep] === "アタック") {
+            state.currentStep++;
+        }
+    }
+
     if (state.currentStep >= steps.length) {
         ['p1', 'p2'].forEach(p => {
             if (state[p].field) {
@@ -512,9 +526,9 @@ function updateUI() {
     if(!state[me] || !state[opp]) return;
 
     safeSetText('self-life', state[me].life);
-    safeSetText('self-res', "R:" + state[me].reserve);
+    safeSetText('self-res', "ﾘｻﾞｰﾌﾞ:" + state[me].reserve + " / ﾄﾗｯｼｭ:" + state[me].trash);
     safeSetText('opp-life', state[opp].life);
-    safeSetText('opp-res', "R:" + state[opp].reserve);
+    safeSetText('opp-res', "ﾘｻﾞｰﾌﾞ:" + state[opp].reserve + " / ﾄﾗｯｼｭ:" + state[opp].trash);
 
     const symsMe = getSyms(me);
     const symsOpp = getSyms(opp);
