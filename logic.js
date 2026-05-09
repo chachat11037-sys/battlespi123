@@ -1,13 +1,20 @@
-let state = {
+// 1. 初期状態を定義する関数（データの型を固定してバグを防ぐ）
+const getInitialState = () => ({
     p1: { life: 5, reserve: 4, trash: 0, hand: [], field: [], cardTrash: [], deck: [] },
     p2: { life: 5, reserve: 4, trash: 0, hand: [], field: [], cardTrash: [], deck: [] },
-    currentTurn: 'p1', currentStep: 0, 
+    currentTurn: 'p1', 
+    currentStep: 0, 
     battle: { attackerId: null, defenderId: null, status: 'idle', flashTurn: null, passCount: 0 },
-    pendingEffect: null, turnCount: 1, roomId: null, myRole: null 
-};
+    pendingEffect: null, 
+    turnCount: 1, 
+    roomId: null, 
+    myRole: null 
+});
 
+let state = getInitialState();
 const steps = ["スタート", "コア", "ドロー", "リフレッシュ", "メイン", "アタック", "エンド"];
 
+// 2. Firebaseへの同期（myRoleを除外して保存）
 function syncToFirebase() {
     if (!state.roomId) return;
     const { db, ref, set } = window.fbSync;
@@ -16,45 +23,62 @@ function syncToFirebase() {
     set(ref(db, 'rooms/' + state.roomId), syncData);
 }
 
+// 3. ゲームへの参加（ここを大幅に強化しました）
 function joinGame(role) {
     const rid = document.getElementById('room-id-input').value;
     if (!rid) return alert("合言葉を入力してください");
+    
     state.roomId = rid;
     state.myRole = role; 
     const { db, ref, onValue } = window.fbSync;
+
     onValue(ref(db, 'rooms/' + rid), (snapshot) => {
         const data = snapshot.val();
-        if (data && data[role]) { // 自分の役割のデータがちゃんとあるか確認
+        if (data) {
+            // データが壊れていたり欠けていたりしても、配列(fieldなど)を強制的に確保する
+            ['p1', 'p2'].forEach(p => {
+                if (!data[p]) data[p] = getInitialState()[p];
+                data[p].field = data[p].field || [];
+                data[p].hand = data[p].hand || [];
+                data[p].deck = data[p].deck || [];
+                data[p].cardTrash = data[p].cardTrash || [];
+            });
+
             const oldRole = state.myRole;
             state = data;
             state.myRole = oldRole;
             updateUI();
         } else if (role === 'p1') {
+            // 部屋がなければP1が初期化
             initOnlineGame();
         }
     });
     document.getElementById('setup-overlay').style.display = 'none';
 }
 
+// 4. ゲームの初期化
 function initOnlineGame() {
+    const newState = getInitialState();
+    newState.roomId = state.roomId;
+    
     ['p1', 'p2'].forEach(p => {
-        state[p] = { life: 5, reserve: 4, trash: 0, hand: [], field: [], cardTrash: [], deck: [] };
         const deckSource = Array(40).fill(0).map(() => {
             const randCard = CARD_DB[Math.floor(Math.random() * CARD_DB.length)];
             return { ...randCard, id: Math.random(), cores: 0, isExhausted: false };
         });
         deckSource.sort(() => Math.random() - 0.5);
-        for(let i=0; i<4; i++) state[p].hand.push(deckSource.pop());
-        state[p].deck = deckSource;
+        for(let i=0; i<4; i++) newState[p].hand.push(deckSource.pop());
+        newState[p].deck = deckSource;
     });
-    state.currentTurn = 'p1';
-    state.currentStep = 0;
+    
+    state = newState;
     syncToFirebase();
 }
 
 function getMySide() { return state.myRole || 'p1'; }
 function getOppSide() { return state.myRole === 'p1' ? 'p2' : 'p1'; }
 
+// 5. 軽減シンボルの計算（安全な設計に修正）
 function getSyms(p) { 
     if (!state[p] || !state[p].field) return {red:0, blue:0};
     return state[p].field.reduce((acc, c) => { 
@@ -70,8 +94,10 @@ function getReduction(card, mySyms) {
     return Math.min(rRed, mySyms.red) + Math.min(rBlue, mySyms.blue);
 }
 
+// 6. カードクリック処理（召喚・疲労）
 function onCardClick(side, idx, type) {
     if (side !== state.myRole || !state[side]) return; 
+    
     if (type === 'hand') {
         const card = state[side].hand[idx];
         if (!card || card.type === 'magic') return;
@@ -80,15 +106,18 @@ function onCardClick(side, idx, type) {
         const cost = Math.max(0, (card.cost || 0) - getReduction(card, syms));
         const minCore = (card.lvCosts && card.lvCosts[0]) || 1;
         
-        // フィールドのコア計算も安全に
         const fieldCores = (state[side].field || []).reduce((sum, c) => sum + (c.cores || 0), 0);
-        const totalCores = state[side].reserve + fieldCores;
+        const totalCores = (state[side].reserve || 0) + fieldCores;
 
         if (totalCores >= (cost + minCore)) {
             let remains = cost + minCore;
+            
+            // リザーブから支払う
             const fromRes = Math.min(state[side].reserve, remains);
             state[side].reserve -= fromRes;
             remains -= fromRes;
+            
+            // 足りない分をフィールドから支払う
             if (remains > 0 && state[side].field) {
                 for (let i = state[side].field.length - 1; i >= 0; i--) {
                     const fCard = state[side].field[i];
@@ -105,18 +134,21 @@ function onCardClick(side, idx, type) {
             state[side].trash += cost;
             const summoned = state[side].hand.splice(idx, 1)[0];
             summoned.cores = minCore;
+            
+            if (!state[side].field) state[side].field = [];
             state[side].field.push(summoned);
         } else {
             alert(`コア不足: 必要 ${cost + minCore} / 所持 ${totalCores}`);
         }
-    } else if (type === 'field' && state[side].field[idx]) {
+    } else if (type === 'field' && state[side].field && state[side].field[idx]) {
         state[side].field[idx].isExhausted = !state[side].field[idx].isExhausted;
     }
     syncToFirebase();
 }
 
+// 7. コア移動
 function changeCore(side, idx, amt) {
-    if (side !== state.myRole || !state[side] || !state[side].field[idx]) return;
+    if (side !== state.myRole || !state[side] || !state[side].field || !state[side].field[idx]) return;
     const c = state[side].field[idx];
     if (amt > 0 && state[side].reserve > 0) {
         c.cores++; state[side].reserve--;
@@ -130,39 +162,56 @@ function changeCore(side, idx, amt) {
     syncToFirebase();
 }
 
+// 8. ステップ進行（リフレッシュのバグを修正）
 function handleNextStep() {
     if (state.currentTurn !== state.myRole) return alert("相手のターンです");
+    
     state.currentStep++;
     if (state.currentStep >= steps.length) {
         state.currentStep = 0;
         state.currentTurn = (state.currentTurn === 'p1' ? 'p2' : 'p1');
         state.turnCount++;
     }
+    
     const p = state.currentTurn;
-    if (steps[state.currentStep] === "コア") state[p].reserve++;
-    if (steps[state.currentStep] === "ドロー" && state[p].deck.length > 0) state[p].hand.push(state[p].deck.pop());
+    if (!state[p]) return;
+
+    if (steps[state.currentStep] === "コア") {
+        state[p].reserve++;
+    }
+    if (steps[state.currentStep] === "ドロー" && state[p].deck && state[p].deck.length > 0) {
+        state[p].hand.push(state[p].deck.pop());
+    }
     if (steps[state.currentStep] === "リフレッシュ") {
-        state[p].field.forEach(c => c.isExhausted = false);
-        state[p].reserve += state[p].trash;
+        // フィールドのカードをすべて回復（fieldが空でもエラーにならないようガード）
+        if (state[p].field) {
+            state[p].field.forEach(c => c.isExhausted = false);
+        }
+        state[p].reserve += (state[p].trash || 0);
         state[p].trash = 0;
     }
     syncToFirebase();
 }
 
+// --- UI表示系（ここからは基本的に元のコードと同じですが、安全性を高めています） ---
+
 function updateUI() {
     const me = getMySide();
     const opp = getOppSide();
     if(!state[me] || !state[opp]) return;
+
     safeSetText('self-life', state[me].life);
     safeSetText('self-res', "R:" + state[me].reserve);
     safeSetText('opp-life', state[opp].life);
     safeSetText('opp-res', "R:" + state[opp].reserve);
+
     const symsMe = getSyms(me);
     const symsOpp = getSyms(opp);
     safeSetText('self-rsym', 'R' + symsMe.red);
     safeSetText('self-bsym', 'B' + symsMe.blue);
     safeSetText('opp-rsym', 'R' + symsOpp.red);
     safeSetText('opp-bsym', 'B' + symsOpp.blue);
+
     const isMyTurn = (state.currentTurn === state.myRole);
     const tTxt = document.getElementById('turn-txt');
     if(tTxt) {
@@ -179,6 +228,7 @@ function renderCards(side, uiPrefix) {
     const fieldEl = document.getElementById(uiPrefix + '-field');
     const isMe = (uiPrefix === 'self');
     if(!handEl || !fieldEl || !state[side]) return;
+
     handEl.innerHTML = (state[side].hand || []).map((c, i) => {
         if (!isMe) return `<div class="card" style="background:#222; border-color:#444;"></div>`;
         const bg = c.image ? `background-image:url('${c.image}')` : '';
@@ -187,6 +237,7 @@ function renderCards(side, uiPrefix) {
             <div class="bp-main" style="font-size:9px; top:35px;">${c.name}</div>
         </div>`;
     }).join('');
+
     fieldEl.innerHTML = (state[side].field || []).map((c, i) => {
         const bg = c.image ? `background-image:url('${c.image}')` : '';
         return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg}" onclick="onCardClick('${side}', ${i}, 'field')" onmouseenter='showDetail(${JSON.stringify(c)})'>
@@ -207,13 +258,16 @@ function showDetail(card) {
     safeSetText('d-family-attr', card.family || '-');
     safeSetText('d-color-attr', card.color || '-');
     safeSetText('d-cost-attr', card.cost || 0);
+    
     let redStr = "-";
     if(card.reductionSyms) redStr = `赤${card.reductionSyms.red||0} 青${card.reductionSyms.blue||0}`;
     else if(card.reduction) redStr = card.reduction;
     safeSetText('d-red-attr', redStr);
+    
     safeSetText('d-sym-attr', card.symbols || (card.type === 'magic' ? 'なし' : 1));
     const img = document.getElementById('detail-img-container');
     if(img && card.image) img.style.backgroundImage = `url('${card.image}')`;
+    
     const lvBody = document.getElementById('d-lv-body');
     if(lvBody) {
         if(card.lvCosts) lvBody.innerHTML = card.lvCosts.map((cost, i) => `<tr><td>Lv${i+1}</td><td>${cost}</td><td>${card.bp ? card.bp[i] : '-'}</td></tr>`).join('');
