@@ -41,6 +41,11 @@ function joinGame(role) {
             });
             if (!data.battle) {
                 data.battle = { isAttacking: false, status: 'idle', attackerIdx: null, blockerIdx: null, flashTurn: null, passCount: 0, uTrigger: null, uTriggerHit: false };
+            } else if (!data.battle.status) {
+                data.battle.status = 'idle';
+                data.battle.blockerIdx = null;
+                data.battle.flashTurn = null;
+                data.battle.passCount = 0;
             }
 
             const oldRole = state.myRole;
@@ -180,12 +185,15 @@ function cancelEffect() {
 function destroyCard(side, idx) {
     const destroyed = state[side].field.splice(idx, 1)[0];
     state[side].reserve += destroyed.cores;
-    destroyed.cores = 0;
-    destroyed.tempBpBonus = 0;
-    destroyed.turnBpBonus = 0;
+    
+    const trashCard = JSON.parse(JSON.stringify(destroyed));
+    trashCard.cores = 0;
+    trashCard.tempBpBonus = 0;
+    trashCard.turnBpBonus = 0;
+    trashCard.isExhausted = false;
     
     if (!state[side].cardTrash) state[side].cardTrash = [];
-    state[side].cardTrash.push(destroyed);
+    state[side].cardTrash.push(trashCard);
 
     if (destroyed.effects) {
         destroyed.effects.forEach(eff => {
@@ -212,6 +220,16 @@ function resolveBattle() {
     const attacker = state[attackerSide].field[attackerIdx];
     const blocker = state[defenderSide].field[blockerIdx];
 
+    if (state.battle.uTriggerHit && attacker && attacker.id === 'ultimate_goradon') {
+        if (blocker && blocker.type === 'spirit') {
+            if (state[defenderSide].life > 0) {
+                state[defenderSide].life--;
+                state[defenderSide].reserve++;
+                alert("ゴラドンのUトリガー効果！ブロックした相手のライフのコア1個がリザーブに移動しました！");
+            }
+        }
+    }
+
     const aStats = getCardStats(attacker, attackerSide, state);
     const bStats = getCardStats(blocker, defenderSide, state);
 
@@ -224,17 +242,7 @@ function resolveBattle() {
         destroyCard(attackerSide, attackerIdx);
     }
 
-    if (state.battle.uTriggerHit && attacker && attacker.id === 'ultimate_goradon') {
-        if (blocker && blocker.type === 'spirit') {
-            if (state[defenderSide].life > 0) {
-                state[defenderSide].life--;
-                state[defenderSide].reserve++;
-                alert("ゴラドンのUトリガー効果！ブロックした相手のライフのコア1個がリザーブに移動しました！");
-            }
-        }
-    }
-
-    if (state[attackerSide].field[attackerIdx]) {
+    if (state[attackerSide] && state[attackerSide].field[attackerIdx]) {
         state[attackerSide].field[attackerIdx].tempBpBonus = 0;
     }
 
@@ -252,6 +260,17 @@ function takeLifeDamage() {
     const me = state.myRole;
     const attackerSide = state.currentTurn;
     const attackerCard = state[attackerSide].field[state.battle.attackerIdx];
+    
+    if (state.battle.uTriggerHit && attackerCard && attackerCard.id === 'ultimate_goradon') {
+        let hasBlocker = false;
+        if (state[me].field) {
+            hasBlocker = state[me].field.some(c => c.type === 'spirit' && !c.isExhausted);
+        }
+        if (hasBlocker) {
+            alert("Uトリガーがヒットしています！回復状態のスピリットがいるため、必ずブロックしなければなりません！");
+            return;
+        }
+    }
     
     const dmg = attackerCard.symbols || 1;
     state[me].life -= dmg;
@@ -431,7 +450,7 @@ function onCardClick(side, idx, type) {
                     });
                 }
 
-                const castMagic = state[side].hand.splice(idx, 1)[0];
+                const castMagic = JSON.parse(JSON.stringify(state[side].hand.splice(idx, 1)[0]));
                 if (!state[side].cardTrash) state[side].cardTrash = [];
                 state[side].cardTrash.push(castMagic);
                 syncToFirebase();
@@ -507,8 +526,9 @@ function onCardClick(side, idx, type) {
                                     const oppDeck = state[getOppSide()].deck;
                                     if (oppDeck && oppDeck.length > 0) {
                                         const hitCard = oppDeck.pop();
+                                        const trashHitCard = JSON.parse(JSON.stringify(hitCard));
                                         if (!state[getOppSide()].cardTrash) state[getOppSide()].cardTrash = [];
-                                        state[getOppSide()].cardTrash.push(hitCard);
+                                        state[getOppSide()].cardTrash.push(trashHitCard);
                                         
                                         const hitCardCost = hitCard.cost || 0;
                                         const myCost = attackingCard.cost || 0;
@@ -743,48 +763,59 @@ function renderCards(side, uiPrefix) {
     if(!handEl || !fieldEl || !state[side]) return;
 
     let trashEl = document.getElementById(uiPrefix + '-card-trash');
-    if (!trashEl) {
-        trashEl = document.createElement('div');
-        trashEl.id = uiPrefix + '-card-trash';
-        if (isMe) {
-            trashEl.style.position = 'fixed';
-            trashEl.style.bottom = '20px';
-            trashEl.style.left = '20px';
-        } else {
-            trashEl.style.position = 'fixed';
-            trashEl.style.top = '20px';
-            trashEl.style.left = '20px';
-        }
-        trashEl.style.zIndex = '50';
-        trashEl.style.border = '2px solid #555';
-        trashEl.style.backgroundColor = 'rgba(0,0,0,0.8)';
-        trashEl.style.borderRadius = '8px';
-        trashEl.style.padding = '5px';
-        document.body.appendChild(trashEl);
+    if (trashEl) {
+        trashEl.remove();
     }
+    trashEl = document.createElement('div');
+    trashEl.id = uiPrefix + '-card-trash';
+    trashEl.style.position = 'fixed';
+    trashEl.style.zIndex = '50';
+    trashEl.style.border = '2px solid #555';
+    trashEl.style.backgroundColor = 'rgba(0,0,0,0.8)';
+    trashEl.style.borderRadius = '8px';
+    trashEl.style.padding = '5px';
+    trashEl.style.cursor = 'pointer';
+
+    if (isMe) {
+        trashEl.style.bottom = '20px';
+        trashEl.style.left = '20px';
+    } else {
+        trashEl.style.top = '20px';
+        trashEl.style.left = '20px';
+    }
+    document.body.appendChild(trashEl);
 
     const trashList = state[side].cardTrash || [];
     if (trashList.length > 0) {
         const topCard = trashList[trashList.length - 1];
         const bg = topCard.image ? `background-image:url('${topCard.image}')` : '';
         trashEl.innerHTML = `<div style="font-size:10px; color:white; text-align:center; margin-bottom:2px;">トラッシュ(${trashList.length})</div>
-        <div class="card ${topCard.color}" style="${bg}; position:relative; margin:0 auto; cursor:pointer;" onmouseenter="showDetail(state['${side}'].cardTrash[${trashList.length - 1}])">
+        <div class="card ${topCard.color}" style="${bg}; position:relative; margin:0 auto;">
             <div class="cost-badge">${topCard.cost}</div>
             <div style="position:absolute; bottom:5px; width:100%; text-align:center; font-size:10px; font-weight:bold; color:white; text-shadow:1px 1px 2px black; pointer-events:none;">${topCard.name}</div>
         </div>`;
+        trashEl.onmouseenter = () => showDetail(topCard);
     } else {
         trashEl.innerHTML = `<div style="font-size:10px; color:white; text-align:center; margin-bottom:2px;">トラッシュ(0)</div>
         <div style="width:60px; height:80px; border:1px dashed #7f8c8d; display:flex; align-items:center; justify-content:center; color:#7f8c8d; font-size:10px; margin:0 auto;">空</div>`;
+        trashEl.onmouseenter = null;
     }
 
     handEl.innerHTML = (state[side].hand || []).map((c, i) => {
         if (!isMe) return `<div class="card" style="background:#222; border-color:#444;"></div>`;
         const bg = c.image ? `background-image:url('${c.image}')` : '';
-        return `<div class="card ${c.color}" style="${bg}" onclick="onCardClick('${side}', ${i}, 'hand')" onmouseenter="showDetail(state['${side}'].hand[${i}])">
+        return `<div class="card ${c.color}" style="${bg}" onclick="onCardClick('${side}', ${i}, 'hand')">
             <div class="cost-badge">${c.cost}</div>
             <div class="bp-main" style="font-size:9px; top:35px;">${c.name}</div>
         </div>`;
     }).join('');
+
+    const handCards = handEl.querySelectorAll('.card');
+    handCards.forEach((el, i) => {
+        if (isMe && state[side].hand[i]) {
+            el.onmouseenter = () => showDetail(state[side].hand[i]);
+        }
+    });
 
     fieldEl.innerHTML = (state[side].field || []).map((c, i) => {
         const bg = c.image ? `background-image:url('${c.image}')` : '';
@@ -806,7 +837,7 @@ function renderCards(side, uiPrefix) {
             statsDisp = `Lv${stats.lv} ${stats.bpDisp}`;
         }
 
-        return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg} ${borderStyle}" onclick="onCardClick('${side}', ${i}, 'field')" onmouseenter="showDetail(state['${side}'].field[${i}])">
+        return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg} ${borderStyle}" onclick="onCardClick('${side}', ${i}, 'field')">
             <div class="cost-badge">${c.cost}</div>
             <div class="core-display">● ${c.cores}</div>
             <div style="position:absolute; top:35%; width:100%; text-align:center; font-size:12px; font-weight:bold; color:white; text-shadow:1px 1px 2px black, 0px 0px 3px black; pointer-events:none;">${statsDisp}</div>
@@ -816,6 +847,13 @@ function renderCards(side, uiPrefix) {
             </div>
         </div>`;
     }).join('');
+
+    const fieldCards = fieldEl.querySelectorAll('.card');
+    fieldCards.forEach((el, i) => {
+        if (state[side].field[i]) {
+            el.onmouseenter = () => showDetail(state[side].field[i]);
+        }
+    });
 }
 
 function showDetail(card) {
