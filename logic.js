@@ -118,6 +118,15 @@ function getCardStats(card, side, currentState) {
                 break;
             }
         }
+    } else if (card.type === 'nexus') {
+        if (card.lvCosts) {
+            for (let lvIndex = card.lvCosts.length - 1; lvIndex >= 0; lvIndex--) {
+                if (card.cores >= card.lvCosts[lvIndex]) {
+                    currentLv = lvIndex + 1;
+                    break;
+                }
+            }
+        }
     }
     
     if (card.tempBpBonus) currentBpNum += card.tempBpBonus;
@@ -139,9 +148,31 @@ function getCardStats(card, side, currentState) {
                 }
             });
         }
+
+        if (card.type === 'spirit' && card.color === 'red') {
+            currentState[side].field.forEach(otherCard => {
+                if (otherCard.type === 'nexus' && otherCard.effects) {
+                    let nLv = 1;
+                    if (otherCard.lvCosts) {
+                        for (let i = otherCard.lvCosts.length - 1; i >= 0; i--) {
+                            if (otherCard.cores >= otherCard.lvCosts[i]) { nLv = i + 1; break; }
+                        }
+                    }
+                    otherCard.effects.forEach(eff => {
+                        if (eff.timing === 'constant' && eff.type === 'global_bp_up_red_spirit') {
+                            if (nLv >= eff.reqLv && steps[currentState.currentStep] === eff.step && state.currentTurn === side) {
+                                currentBpNum += eff.value;
+                            }
+                        }
+                    });
+                }
+            });
+        }
     }
 
-    currentBpDisp = currentBpNum.toString();
+    if (card.type !== 'nexus') {
+        currentBpDisp = currentBpNum.toString();
+    }
     return { lv: currentLv, bpDisp: currentBpDisp, bpNum: currentBpNum };
 }
 
@@ -162,6 +193,8 @@ function destroyCard(side, idx) {
     destroyed.cores = 0;
     destroyed.tempBpBonus = 0;
     destroyed.turnBpBonus = 0;
+    
+    if (!state[side].cardTrash) state[side].cardTrash = [];
     state[side].cardTrash.push(destroyed);
 
     if (destroyed.effects) {
@@ -227,6 +260,35 @@ function takeLifeDamage() {
     state.battle.status = 'idle';
     state.battle.attackerIdx = null;
     state.battle.blockerIdx = null;
+
+    let pending = null;
+    if (state[me].field) {
+        state[me].field.forEach(c => {
+            if (c.type === 'nexus' && c.effects) {
+                let nLv = 1;
+                if (c.lvCosts) {
+                    for (let i = c.lvCosts.length - 1; i >= 0; i--) {
+                        if (c.cores >= c.lvCosts[i]) { nLv = i + 1; break; }
+                    }
+                }
+                c.effects.forEach(eff => {
+                    if (eff.timing === 'on_life_decrease' && state.currentTurn !== me && nLv >= eff.reqLv) {
+                        pending = {
+                            player: me,
+                            type: eff.type,
+                            value: eff.value,
+                            text: `${c.name}の効果：BP${eff.value}以下の相手スピリットを選んで破壊してください`
+                        };
+                    }
+                });
+            }
+        });
+    }
+    
+    if (pending) {
+        state.pendingEffect = pending;
+    }
+
     syncToFirebase();
 }
 
@@ -357,6 +419,7 @@ function onCardClick(side, idx, type) {
                 }
 
                 const castMagic = state[side].hand.splice(idx, 1)[0];
+                if (!state[side].cardTrash) state[side].cardTrash = [];
                 state[side].cardTrash.push(castMagic);
                 syncToFirebase();
             } else {
@@ -372,7 +435,7 @@ function onCardClick(side, idx, type) {
 
         const syms = getSyms(side);
         const cost = Math.max(0, (card.cost || 0) - getReduction(card, syms));
-        const minCore = (card.lvCosts && card.lvCosts[0]) || 1;
+        const minCore = (card.lvCosts && card.lvCosts[0] !== undefined) ? card.lvCosts[0] : 1;
         
         const fieldCores = (state[side].field || []).reduce((sum, c) => sum + (c.cores || 0), 0);
         const totalCores = (state[side].reserve || 0) + fieldCores;
@@ -390,7 +453,9 @@ function onCardClick(side, idx, type) {
                     const take = Math.min(fCard.cores, remains);
                     fCard.cores -= take;
                     remains -= take;
-                    if (fCard.cores < (fCard.lvCosts[0] || 1)) {
+                    
+                    const fMinCore = (fCard.lvCosts && fCard.lvCosts[0] !== undefined) ? fCard.lvCosts[0] : 1;
+                    if (fCard.cores < fMinCore) {
                         destroyCard(side, i);
                     }
                     if (remains <= 0) break;
@@ -409,7 +474,7 @@ function onCardClick(side, idx, type) {
         }
     } else if (type === 'field' && state[side].field && state[side].field[idx]) {
         
-        if (steps[state.currentStep] === "アタック") {
+        if (steps[state.currentStep] === "アタック" && state[side].field[idx].type !== 'nexus') {
             if (state.currentTurn === state.myRole && side === state.myRole) {
                 if (!state[side].field[idx].isExhausted && !state.battle.isAttacking) {
                     const attackingCard = state[side].field[idx];
@@ -462,7 +527,8 @@ function changeCore(side, idx, amt) {
         c.cores++; state[side].reserve--;
     } else if (amt < 0 && c.cores > 0) {
         c.cores--; state[side].reserve++;
-        if (c.cores < (c.lvCosts ? c.lvCosts[0] : 1)) {
+        const cMinCore = (c.lvCosts && c.lvCosts[0] !== undefined) ? c.lvCosts[0] : 1;
+        if (c.cores < cMinCore) {
             destroyCard(side, idx);
         }
     }
@@ -665,14 +731,21 @@ function renderCards(side, uiPrefix) {
             borderStyle = "box-shadow: 0 0 15px 5px red;";
         }
         
-        if (state.pendingEffect && state.pendingEffect.player === state.myRole) {
+        if (state.pendingEffect && state.pendingEffect.player === state.myRole && c.type !== 'nexus') {
             borderStyle = "box-shadow: 0 0 15px 5px #9b59b6; cursor: crosshair;";
+        }
+
+        let statsDisp = "";
+        if (c.type === 'nexus') {
+            statsDisp = `Lv${stats.lv}`;
+        } else {
+            statsDisp = `Lv${stats.lv} ${stats.bpDisp}`;
         }
 
         return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg} ${borderStyle}" onclick="onCardClick('${side}', ${i}, 'field')" onmouseenter='showDetail(${safeCardJson})'>
             <div class="cost-badge">${c.cost}</div>
             <div class="core-display">● ${c.cores}</div>
-            <div style="position:absolute; top:35%; width:100%; text-align:center; font-size:12px; font-weight:bold; color:white; text-shadow:1px 1px 2px black, 0px 0px 3px black; pointer-events:none;">Lv${stats.lv} ${stats.bpDisp}</div>
+            <div style="position:absolute; top:35%; width:100%; text-align:center; font-size:12px; font-weight:bold; color:white; text-shadow:1px 1px 2px black, 0px 0px 3px black; pointer-events:none;">${statsDisp}</div>
             <div class="card-btns" style="display:${isMe?'flex':'none'}">
                 <button onclick="event.stopPropagation(); changeCore('${side}',${i},1)">+</button>
                 <button onclick="event.stopPropagation(); changeCore('${side}',${i},-1)">-</button>
