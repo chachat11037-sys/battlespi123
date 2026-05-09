@@ -70,7 +70,7 @@ function initOnlineGame() {
     ['p1', 'p2'].forEach(p => {
         const deckSource = Array(40).fill(0).map(() => {
             const randCard = CARD_DB[Math.floor(Math.random() * CARD_DB.length)];
-            return { ...randCard, id: Math.random(), cores: 0, isExhausted: false, tempBpBonus: 0 };
+            return { ...randCard, id: Math.random(), cores: 0, isExhausted: false, tempBpBonus: 0, turnBpBonus: 0 };
         });
         deckSource.sort(() => Math.random() - 0.5);
         for(let i=0; i<4; i++) state[p].hand.push(deckSource.pop());
@@ -115,9 +115,8 @@ function getCardStats(card, side, currentState) {
         }
     }
     
-    if (card.tempBpBonus) {
-        currentBpNum += card.tempBpBonus;
-    }
+    if (card.tempBpBonus) currentBpNum += card.tempBpBonus;
+    if (card.turnBpBonus) currentBpNum += card.turnBpBonus;
 
     if (currentState && side && currentState[side] && currentState[side].field) {
         if (card.effects) {
@@ -138,13 +137,16 @@ function getCardStats(card, side, currentState) {
     }
 
     currentBpDisp = currentBpNum.toString();
-    
     return { lv: currentLv, bpDisp: currentBpDisp, bpNum: currentBpNum };
 }
 
 function cancelEffect() {
     if (state.pendingEffect && state.pendingEffect.player === state.myRole) {
         state.pendingEffect = null;
+        if (steps[state.currentStep] === "アタック" && state.battle.flashTurn === state.myRole) {
+            state.battle.passCount = 0;
+            state.battle.flashTurn = getOppSide();
+        }
         syncToFirebase();
     }
 }
@@ -154,6 +156,7 @@ function destroyCard(side, idx) {
     state[side].reserve += destroyed.cores;
     destroyed.cores = 0;
     destroyed.tempBpBonus = 0;
+    destroyed.turnBpBonus = 0;
     state[side].cardTrash.push(destroyed);
 
     if (destroyed.effects) {
@@ -245,11 +248,15 @@ function onCardClick(side, idx, type) {
             alert("相手が効果対象を選択中です。");
             return;
         }
-        if (type === 'field' && side !== state.myRole) {
+        if (type === 'field') {
             const targetCard = state[side].field[idx];
             if (!targetCard) return;
 
             if (state.pendingEffect.type === 'destroy_bp') {
+                if (side === state.myRole) {
+                    alert("相手のスピリットを選択してください！");
+                    return;
+                }
                 const stats = getCardStats(targetCard, side, state);
                 if (stats.bpNum > 0 && stats.bpNum <= state.pendingEffect.value) {
                     destroyCard(side, idx);
@@ -258,9 +265,16 @@ function onCardClick(side, idx, type) {
                 } else {
                     alert(`BP${state.pendingEffect.value}以下ではありません！`);
                 }
+            } else if (state.pendingEffect.type === 'flash_bp_up') {
+                targetCard.turnBpBonus = (targetCard.turnBpBonus || 0) + state.pendingEffect.value;
+                state.pendingEffect = null;
+                
+                if (steps[state.currentStep] === "アタック") {
+                    state.battle.passCount = 0;
+                    state.battle.flashTurn = getOppSide();
+                }
+                syncToFirebase();
             }
-        } else {
-            alert("効果の対象となる相手のスピリットを選択してください。");
         }
         return;
     }
@@ -272,9 +286,25 @@ function onCardClick(side, idx, type) {
         if (!card) return;
 
         if (card.type === 'magic') {
-            if (state.currentTurn !== state.myRole || steps[state.currentStep] !== "メイン") {
-                alert("マジックは自分のメインステップでのみ使用可能です！");
+            const isMainStep = state.currentTurn === state.myRole && steps[state.currentStep] === "メイン";
+            const isFlashTiming = steps[state.currentStep] === "アタック" && state.battle.flashTurn === state.myRole;
+
+            let triggerTiming = null;
+            if (isMainStep) triggerTiming = 'main';
+            else if (isFlashTiming) triggerTiming = 'flash';
+            else {
+                alert("今はマジックを使用できません！");
                 return;
+            }
+            
+            const hasEffect = card.effects && card.effects.some(e => e.timing === triggerTiming);
+            if (!hasEffect) {
+                if (isMainStep && card.effects && card.effects.some(e => e.timing === 'flash')) {
+                    triggerTiming = 'flash';
+                } else {
+                    alert("このタイミングで発動できる効果がありません！");
+                    return;
+                }
             }
 
             const syms = getSyms(side);
@@ -304,9 +334,18 @@ function onCardClick(side, idx, type) {
 
                 if (card.effects) {
                     card.effects.forEach(eff => {
-                        if (eff.type === 'draw') {
-                            for(let d=0; d<eff.amount; d++) {
-                                if(state[side].deck.length > 0) state[side].hand.push(state[side].deck.pop());
+                        if (eff.timing === triggerTiming) {
+                            if (eff.type === 'draw') {
+                                for(let d=0; d<eff.amount; d++) {
+                                    if(state[side].deck.length > 0) state[side].hand.push(state[side].deck.pop());
+                                }
+                            } else if (eff.type === 'flash_bp_up') {
+                                state.pendingEffect = {
+                                    player: side,
+                                    type: 'flash_bp_up',
+                                    value: eff.value,
+                                    text: `${card.name}の効果：BPを+${eff.value}するスピリットを選んでください`
+                                };
                             }
                         }
                     });
@@ -356,6 +395,7 @@ function onCardClick(side, idx, type) {
             const summoned = state[side].hand.splice(idx, 1)[0];
             summoned.cores = minCore;
             summoned.tempBpBonus = 0;
+            summoned.turnBpBonus = 0;
             
             if (!state[side].field) state[side].field = [];
             state[side].field.push(summoned);
@@ -431,6 +471,14 @@ function handleNextStep() {
     
     state.currentStep++;
     if (state.currentStep >= steps.length) {
+        ['p1', 'p2'].forEach(p => {
+            if (state[p].field) {
+                state[p].field.forEach(c => {
+                    c.turnBpBonus = 0;
+                });
+            }
+        });
+        
         state.currentStep = 0;
         state.currentTurn = (state.currentTurn === 'p1' ? 'p2' : 'p1');
         state.turnCount++;
@@ -603,7 +651,7 @@ function renderCards(side, uiPrefix) {
             borderStyle = "box-shadow: 0 0 15px 5px red;";
         }
         
-        if (state.pendingEffect && state.pendingEffect.player === state.myRole && side !== state.myRole) {
+        if (state.pendingEffect && state.pendingEffect.player === state.myRole) {
             borderStyle = "box-shadow: 0 0 15px 5px #9b59b6; cursor: crosshair;";
         }
 
