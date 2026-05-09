@@ -1,4 +1,3 @@
-// 1. 初期状態を定義する関数（データの型を固定してバグを防ぐ）
 const getInitialState = () => ({
     p1: { life: 5, reserve: 4, trash: 0, hand: [], field: [], cardTrash: [], deck: [] },
     p2: { life: 5, reserve: 4, trash: 0, hand: [], field: [], cardTrash: [], deck: [] },
@@ -14,7 +13,6 @@ const getInitialState = () => ({
 let state = getInitialState();
 const steps = ["スタート", "コア", "ドロー", "リフレッシュ", "メイン", "アタック", "エンド"];
 
-// 2. Firebaseへの同期（myRoleを除外して保存）
 function syncToFirebase() {
     if (!state.roomId) return;
     const { db, ref, set } = window.fbSync;
@@ -23,7 +21,6 @@ function syncToFirebase() {
     set(ref(db, 'rooms/' + state.roomId), syncData);
 }
 
-// 3. ゲームへの参加（ここを大幅に強化しました）
 function joinGame(role) {
     const rid = document.getElementById('room-id-input').value;
     if (!rid) return alert("合言葉を入力してください");
@@ -35,7 +32,6 @@ function joinGame(role) {
     onValue(ref(db, 'rooms/' + rid), (snapshot) => {
         const data = snapshot.val();
         if (data) {
-            // データが壊れていたり欠けていたりしても、配列(fieldなど)を強制的に確保する
             ['p1', 'p2'].forEach(p => {
                 if (!data[p]) data[p] = getInitialState()[p];
                 data[p].field = data[p].field || [];
@@ -49,36 +45,36 @@ function joinGame(role) {
             state.myRole = oldRole;
             updateUI();
         } else if (role === 'p1') {
-            // 部屋がなければP1が初期化
             initOnlineGame();
         }
     });
     document.getElementById('setup-overlay').style.display = 'none';
 }
 
-// 4. ゲームの初期化
 function initOnlineGame() {
-    const newState = getInitialState();
-    newState.roomId = state.roomId;
+    const currentRole = state.myRole;
+    const currentRoomId = state.roomId;
     
+    state = getInitialState();
+    state.myRole = currentRole;
+    state.roomId = currentRoomId;
+
     ['p1', 'p2'].forEach(p => {
         const deckSource = Array(40).fill(0).map(() => {
             const randCard = CARD_DB[Math.floor(Math.random() * CARD_DB.length)];
             return { ...randCard, id: Math.random(), cores: 0, isExhausted: false };
         });
         deckSource.sort(() => Math.random() - 0.5);
-        for(let i=0; i<4; i++) newState[p].hand.push(deckSource.pop());
-        newState[p].deck = deckSource;
+        for(let i=0; i<4; i++) state[p].hand.push(deckSource.pop());
+        state[p].deck = deckSource;
     });
     
-    state = newState;
     syncToFirebase();
 }
 
 function getMySide() { return state.myRole || 'p1'; }
 function getOppSide() { return state.myRole === 'p1' ? 'p2' : 'p1'; }
 
-// 5. 軽減シンボルの計算（安全な設計に修正）
 function getSyms(p) { 
     if (!state[p] || !state[p].field) return {red:0, blue:0};
     return state[p].field.reduce((acc, c) => { 
@@ -94,7 +90,6 @@ function getReduction(card, mySyms) {
     return Math.min(rRed, mySyms.red) + Math.min(rBlue, mySyms.blue);
 }
 
-// 6. カードクリック処理（召喚・疲労）
 function onCardClick(side, idx, type) {
     if (side !== state.myRole || !state[side]) return; 
     
@@ -112,12 +107,10 @@ function onCardClick(side, idx, type) {
         if (totalCores >= (cost + minCore)) {
             let remains = cost + minCore;
             
-            // リザーブから支払う
             const fromRes = Math.min(state[side].reserve, remains);
             state[side].reserve -= fromRes;
             remains -= fromRes;
             
-            // 足りない分をフィールドから支払う
             if (remains > 0 && state[side].field) {
                 for (let i = state[side].field.length - 1; i >= 0; i--) {
                     const fCard = state[side].field[i];
@@ -146,7 +139,6 @@ function onCardClick(side, idx, type) {
     syncToFirebase();
 }
 
-// 7. コア移動
 function changeCore(side, idx, amt) {
     if (side !== state.myRole || !state[side] || !state[side].field || !state[side].field[idx]) return;
     const c = state[side].field[idx];
@@ -162,7 +154,6 @@ function changeCore(side, idx, amt) {
     syncToFirebase();
 }
 
-// 8. ステップ進行（リフレッシュのバグを修正）
 function handleNextStep() {
     if (state.currentTurn !== state.myRole) return alert("相手のターンです");
     
@@ -183,7 +174,6 @@ function handleNextStep() {
         state[p].hand.push(state[p].deck.pop());
     }
     if (steps[state.currentStep] === "リフレッシュ") {
-        // フィールドのカードをすべて回復（fieldが空でもエラーにならないようガード）
         if (state[p].field) {
             state[p].field.forEach(c => c.isExhausted = false);
         }
@@ -192,8 +182,6 @@ function handleNextStep() {
     }
     syncToFirebase();
 }
-
-// --- UI表示系（ここからは基本的に元のコードと同じですが、安全性を高めています） ---
 
 function updateUI() {
     const me = getMySide();
