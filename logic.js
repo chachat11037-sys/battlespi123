@@ -3,7 +3,7 @@ const getInitialState = () => ({
     p2: { life: 5, reserve: 4, trash: 0, hand: [], field: [], cardTrash: [], deck: [] },
     currentTurn: 'p1', 
     currentStep: 0, 
-    battle: { isAttacking: false, attackerIdx: null },
+    battle: { isAttacking: false, status: 'idle', attackerIdx: null, blockerIdx: null, flashTurn: null, passCount: 0 },
     pendingEffect: null, 
     turnCount: 1, 
     roomId: null, 
@@ -39,7 +39,14 @@ function joinGame(role) {
                 data[p].deck = data[p].deck || [];
                 data[p].cardTrash = data[p].cardTrash || [];
             });
-            if (!data.battle) data.battle = { isAttacking: false, attackerIdx: null };
+            if (!data.battle) {
+                data.battle = { isAttacking: false, status: 'idle', attackerIdx: null, blockerIdx: null, flashTurn: null, passCount: 0 };
+            } else if (!data.battle.status) {
+                data.battle.status = 'idle';
+                data.battle.blockerIdx = null;
+                data.battle.flashTurn = null;
+                data.battle.passCount = 0;
+            }
 
             const oldRole = state.myRole;
             state = data;
@@ -165,10 +172,11 @@ function destroyCard(side, idx) {
     }
 }
 
-function resolveBattle(blockerIdx) {
+function resolveBattle() {
     const attackerSide = state.currentTurn;
-    const defenderSide = state.myRole;
+    const defenderSide = attackerSide === 'p1' ? 'p2' : 'p1';
     const attackerIdx = state.battle.attackerIdx;
+    const blockerIdx = state.battle.blockerIdx;
 
     const attacker = state[attackerSide].field[attackerIdx];
     const blocker = state[defenderSide].field[blockerIdx];
@@ -190,12 +198,14 @@ function resolveBattle(blockerIdx) {
     }
 
     state.battle.isAttacking = false;
+    state.battle.status = 'idle';
     state.battle.attackerIdx = null;
+    state.battle.blockerIdx = null;
     syncToFirebase();
 }
 
 function takeLifeDamage() {
-    if (state.currentTurn === state.myRole || !state.battle.isAttacking) return;
+    if (state.currentTurn === state.myRole || !state.battle.isAttacking || state.battle.status !== 'block_declare') return;
     const me = state.myRole;
     const attackerSide = state.currentTurn;
     const attackerCard = state[attackerSide].field[state.battle.attackerIdx];
@@ -206,7 +216,26 @@ function takeLifeDamage() {
     attackerCard.tempBpBonus = 0;
     
     state.battle.isAttacking = false;
+    state.battle.status = 'idle';
     state.battle.attackerIdx = null;
+    state.battle.blockerIdx = null;
+    syncToFirebase();
+}
+
+function passFlash() {
+    if (state.battle.flashTurn !== state.myRole) return;
+    
+    state.battle.passCount++;
+    if (state.battle.passCount >= 2) {
+        state.battle.passCount = 0;
+        if (state.battle.status === 'flash_attack') {
+            state.battle.status = 'block_declare';
+        } else if (state.battle.status === 'flash_block') {
+            resolveBattle();
+        }
+    } else {
+        state.battle.flashTurn = getOppSide();
+    }
     syncToFirebase();
 }
 
@@ -350,15 +379,22 @@ function onCardClick(side, idx, type) {
                     }
                     
                     state.battle.isAttacking = true;
+                    state.battle.status = 'flash_attack';
                     state.battle.attackerIdx = idx;
+                    state.battle.flashTurn = getOppSide();
+                    state.battle.passCount = 0;
                     syncToFirebase();
                     return;
                 }
             }
-            if (state.currentTurn !== state.myRole && side === state.myRole && state.battle.isAttacking) {
+            if (state.currentTurn !== state.myRole && side === state.myRole && state.battle.isAttacking && state.battle.status === 'block_declare') {
                 if (!state[side].field[idx].isExhausted) {
                     state[side].field[idx].isExhausted = true;
-                    resolveBattle(idx);
+                    state.battle.status = 'flash_block';
+                    state.battle.blockerIdx = idx;
+                    state.battle.flashTurn = state.myRole;
+                    state.battle.passCount = 0;
+                    syncToFirebase();
                     return;
                 }
             }
@@ -469,10 +505,33 @@ function updateUI() {
         } else {
             battleBtn.innerHTML = `<div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#7f8c8d; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手が効果対象を選択中...</div>`;
         }
-    } else if (state.battle.isAttacking && !isMyTurn) {
-        battleBtn.innerHTML = `<button onclick="takeLifeDamage()" style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#e74c3c; color:white; border:none; border-radius:10px; cursor:pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">ライフで受ける</button>`;
-    } else if (state.battle.isAttacking && isMyTurn) {
-        battleBtn.innerHTML = `<div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#f39c12; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手の対応を待っています...</div>`;
+    } else if (state.battle.isAttacking) {
+        const isDefender = state.currentTurn !== state.myRole;
+        
+        if (state.battle.status === 'flash_attack' || state.battle.status === 'flash_block') {
+            if (state.battle.flashTurn === state.myRole) {
+                battleBtn.innerHTML = `
+                    <div style="display:flex; flex-direction:column; align-items:center; gap:10px; background-color:rgba(41, 128, 185, 0.9); padding:20px; border-radius:10px; box-shadow: 0 4px 10px rgba(0,0,0,0.7);">
+                        <div style="font-size:18px; font-weight:bold; color:#fff;">フラッシュタイミング：あなたの優先権</div>
+                        <button onclick="passFlash()" style="padding:10px 20px; font-size:14px; background-color:#34495e; color:white; border:none; border-radius:5px; cursor:pointer;">パスする</button>
+                    </div>
+                `;
+            } else {
+                battleBtn.innerHTML = `<div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#7f8c8d; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手のフラッシュ対応を待機中...</div>`;
+            }
+        } else if (state.battle.status === 'block_declare') {
+            if (isDefender) {
+                battleBtn.innerHTML = `
+                    <div style="display:flex; flex-direction:column; align-items:center; gap:10px; background-color:rgba(192, 57, 43, 0.9); padding:20px; border-radius:10px; box-shadow: 0 4px 10px rgba(0,0,0,0.7);">
+                        <div style="font-size:18px; font-weight:bold; color:#fff;">ブロック宣言ステップ</div>
+                        <button onclick="takeLifeDamage()" style="padding:10px 20px; font-size:14px; background-color:#e74c3c; color:white; border:none; border-radius:5px; cursor:pointer;">ライフで受ける</button>
+                        <div style="font-size:12px; color:#ddd;">※スピリットをクリックしてブロックも可能</div>
+                    </div>
+                `;
+            } else {
+                battleBtn.innerHTML = `<div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#f39c12; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手のブロック宣言を待機中...</div>`;
+            }
+        }
     } else {
         battleBtn.innerHTML = '';
     }
