@@ -142,6 +142,12 @@ const CARD_DB = [
                 type: "draw",
                 amount: 2,
                 text: "【メイン】自分はデッキから2枚ドローする。"
+            },
+            {
+                timing: "flash",
+                type: "flash_bp_up",
+                value: 2000,
+                text: "【フラッシュ】このターンの間、スピリット1体をBP+2000する。"
             }
         ]
     }
