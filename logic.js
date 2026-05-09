@@ -3,7 +3,7 @@ const getInitialState = () => ({
     p2: { life: 5, reserve: 4, trash: 0, hand: [], field: [], cardTrash: [], deck: [] },
     currentTurn: 'p1', 
     currentStep: 0, 
-    battle: { isAttacking: false, status: 'idle', attackerIdx: null, blockerIdx: null, flashTurn: null, passCount: 0 },
+    battle: { isAttacking: false, status: 'idle', attackerIdx: null, blockerIdx: null, flashTurn: null, passCount: 0, uTrigger: null, uTriggerHit: false },
     pendingEffect: null, 
     turnCount: 1, 
     roomId: null, 
@@ -40,12 +40,7 @@ function joinGame(role) {
                 data[p].cardTrash = data[p].cardTrash || [];
             });
             if (!data.battle) {
-                data.battle = { isAttacking: false, status: 'idle', attackerIdx: null, blockerIdx: null, flashTurn: null, passCount: 0 };
-            } else if (!data.battle.status) {
-                data.battle.status = 'idle';
-                data.battle.blockerIdx = null;
-                data.battle.flashTurn = null;
-                data.battle.passCount = 0;
+                data.battle = { isAttacking: false, status: 'idle', attackerIdx: null, blockerIdx: null, flashTurn: null, passCount: 0, uTrigger: null, uTriggerHit: false };
             }
 
             const oldRole = state.myRole;
@@ -104,27 +99,22 @@ function getReduction(card, mySyms) {
 }
 
 function getCardStats(card, side, currentState) {
-    let currentLv = 1;
+    let currentLvIdx = 0;
+    let currentLvDisp = 1;
     let currentBpNum = 0;
     let currentBpDisp = "-";
     
-    if (card.lvCosts && card.bp) {
+    if (card.lvCosts) {
         for (let lvIndex = card.lvCosts.length - 1; lvIndex >= 0; lvIndex--) {
             if (card.cores >= card.lvCosts[lvIndex]) {
-                currentLv = lvIndex + 1;
-                currentBpDisp = card.bp[lvIndex];
-                currentBpNum = currentBpDisp === '-' ? 0 : parseInt(currentBpDisp, 10);
-                if (isNaN(currentBpNum)) currentBpNum = 0;
-                break;
-            }
-        }
-    } else if (card.type === 'nexus') {
-        if (card.lvCosts) {
-            for (let lvIndex = card.lvCosts.length - 1; lvIndex >= 0; lvIndex--) {
-                if (card.cores >= card.lvCosts[lvIndex]) {
-                    currentLv = lvIndex + 1;
-                    break;
+                currentLvIdx = lvIndex;
+                currentLvDisp = card.lvNames ? card.lvNames[lvIndex] : lvIndex + 1;
+                if (card.bp) {
+                    currentBpDisp = card.bp[lvIndex];
+                    currentBpNum = currentBpDisp === '-' ? 0 : parseInt(currentBpDisp, 10);
+                    if (isNaN(currentBpNum)) currentBpNum = 0;
                 }
+                break;
             }
         }
     }
@@ -173,7 +163,7 @@ function getCardStats(card, side, currentState) {
     if (card.type !== 'nexus') {
         currentBpDisp = currentBpNum.toString();
     }
-    return { lv: currentLv, bpDisp: currentBpDisp, bpNum: currentBpNum };
+    return { lv: currentLvDisp, lvIdx: currentLvIdx, bpDisp: currentBpDisp, bpNum: currentBpNum };
 }
 
 function cancelEffect() {
@@ -234,6 +224,16 @@ function resolveBattle() {
         destroyCard(attackerSide, attackerIdx);
     }
 
+    if (state.battle.uTriggerHit && attacker && attacker.id === 'ultimate_goradon') {
+        if (blocker && blocker.type === 'spirit') {
+            if (state[defenderSide].life > 0) {
+                state[defenderSide].life--;
+                state[defenderSide].reserve++;
+                alert("ゴラドンのUトリガー効果！ブロックした相手のライフのコア1個がリザーブに移動しました！");
+            }
+        }
+    }
+
     if (state[attackerSide].field[attackerIdx]) {
         state[attackerSide].field[attackerIdx].tempBpBonus = 0;
     }
@@ -242,6 +242,8 @@ function resolveBattle() {
     state.battle.status = 'idle';
     state.battle.attackerIdx = null;
     state.battle.blockerIdx = null;
+    state.battle.uTrigger = null;
+    state.battle.uTriggerHit = false;
     syncToFirebase();
 }
 
@@ -260,6 +262,8 @@ function takeLifeDamage() {
     state.battle.status = 'idle';
     state.battle.attackerIdx = null;
     state.battle.blockerIdx = null;
+    state.battle.uTrigger = null;
+    state.battle.uTriggerHit = false;
 
     let pending = null;
     if (state[me].field) {
@@ -352,6 +356,14 @@ function onCardClick(side, idx, type) {
         const card = state[side].hand[idx];
         if (!card) return;
 
+        if (card.type === 'ultimate') {
+            const hasCondition = (state[side].field || []).some(c => c.type === 'spirit' && c.color === 'red');
+            if (!hasCondition) {
+                alert("召喚条件を満たしていません！（自分の赤スピリット1体以上）");
+                return;
+            }
+        }
+
         if (card.type === 'magic') {
             const isMainStep = state.currentTurn === state.myRole && steps[state.currentStep] === "メイン";
             const isFlashTiming = steps[state.currentStep] === "アタック" && state.battle.flashTurn === state.myRole;
@@ -391,7 +403,8 @@ function onCardClick(side, idx, type) {
                         const take = Math.min(fCard.cores, remains);
                         fCard.cores -= take;
                         remains -= take;
-                        if (fCard.cores < (fCard.lvCosts[0] || 1)) {
+                        const fMinCore = (fCard.lvCosts && fCard.lvCosts[0] !== undefined) ? fCard.lvCosts[0] : 1;
+                        if (fCard.cores < fMinCore) {
                             destroyCard(side, i);
                         }
                         if (remains <= 0) break;
@@ -480,10 +493,35 @@ function onCardClick(side, idx, type) {
                     const attackingCard = state[side].field[idx];
                     attackingCard.isExhausted = true;
                     
+                    let uTriggerHit = false;
+                    let uTriggerData = null;
+                    const stats = getCardStats(attackingCard, side, state);
+
                     if (attackingCard.effects) {
                         attackingCard.effects.forEach(eff => {
                             if (eff.timing === 'attack' && eff.type === 'self_bp_up') {
                                 attackingCard.tempBpBonus = eff.value;
+                            }
+                            if (eff.timing === 'attack' && eff.type === 'u_trigger') {
+                                if ((stats.lvIdx + 1) >= eff.reqLv) {
+                                    const oppDeck = state[getOppSide()].deck;
+                                    if (oppDeck && oppDeck.length > 0) {
+                                        const hitCard = oppDeck.pop();
+                                        if (!state[getOppSide()].cardTrash) state[getOppSide()].cardTrash = [];
+                                        state[getOppSide()].cardTrash.push(hitCard);
+                                        
+                                        const hitCardCost = hitCard.cost || 0;
+                                        const myCost = attackingCard.cost || 0;
+                                        uTriggerHit = (hitCardCost < myCost);
+                                        
+                                        uTriggerData = {
+                                            cardName: hitCard.name,
+                                            cardCost: hitCardCost,
+                                            myCost: myCost,
+                                            isHit: uTriggerHit
+                                        };
+                                    }
+                                }
                             }
                         });
                     }
@@ -493,6 +531,9 @@ function onCardClick(side, idx, type) {
                     state.battle.attackerIdx = idx;
                     state.battle.flashTurn = getOppSide();
                     state.battle.passCount = 0;
+                    state.battle.uTrigger = uTriggerData;
+                    state.battle.uTriggerHit = uTriggerHit;
+                    
                     syncToFirebase();
                     return;
                 }
@@ -622,6 +663,20 @@ function updateUI() {
         document.body.appendChild(battleBtn);
     }
     
+    let uTriggerMsg = '';
+    if (state.battle.uTrigger) {
+        const t = state.battle.uTrigger;
+        const hitText = t.isHit ? "【Uトリガー HIT!!】" : "【GUARD】";
+        const hitColor = t.isHit ? "#e74c3c" : "#3498db";
+        uTriggerMsg = `
+            <div style="background-color: ${hitColor}; padding:10px; border-radius:5px; margin-bottom:10px; color:white; text-align:center;">
+                <div style="font-weight:bold; font-size:16px;">${hitText}</div>
+                <div style="font-size:12px;">相手のデッキ: ${t.cardName} (コスト${t.cardCost}) vs ゴラドン (コスト${t.myCost})</div>
+                <div style="font-size:10px; margin-top:5px;">※ヒット時、相手は可能ならブロックしなければなりません</div>
+            </div>
+        `;
+    }
+
     if (state.pendingEffect) {
         if (state.pendingEffect.player === state.myRole) {
             battleBtn.innerHTML = `
@@ -640,24 +695,36 @@ function updateUI() {
             if (state.battle.flashTurn === state.myRole) {
                 battleBtn.innerHTML = `
                     <div style="display:flex; flex-direction:column; align-items:center; gap:10px; background-color:rgba(41, 128, 185, 0.9); padding:20px; border-radius:10px; box-shadow: 0 4px 10px rgba(0,0,0,0.7);">
+                        ${uTriggerMsg}
                         <div style="font-size:18px; font-weight:bold; color:#fff;">フラッシュタイミング：あなたの優先権</div>
                         <button onclick="passFlash()" style="padding:10px 20px; font-size:14px; background-color:#34495e; color:white; border:none; border-radius:5px; cursor:pointer;">パスする</button>
                     </div>
                 `;
             } else {
-                battleBtn.innerHTML = `<div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#7f8c8d; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手のフラッシュ対応を待機中...</div>`;
+                battleBtn.innerHTML = `
+                    <div style="display:flex; flex-direction:column; align-items:center; gap:10px;">
+                        ${uTriggerMsg}
+                        <div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#7f8c8d; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手のフラッシュ対応を待機中...</div>
+                    </div>
+                `;
             }
         } else if (state.battle.status === 'block_declare') {
             if (isDefender) {
                 battleBtn.innerHTML = `
                     <div style="display:flex; flex-direction:column; align-items:center; gap:10px; background-color:rgba(192, 57, 43, 0.9); padding:20px; border-radius:10px; box-shadow: 0 4px 10px rgba(0,0,0,0.7);">
+                        ${uTriggerMsg}
                         <div style="font-size:18px; font-weight:bold; color:#fff;">ブロック宣言ステップ</div>
                         <button onclick="takeLifeDamage()" style="padding:10px 20px; font-size:14px; background-color:#e74c3c; color:white; border:none; border-radius:5px; cursor:pointer;">ライフで受ける</button>
                         <div style="font-size:12px; color:#ddd;">※スピリットをクリックしてブロックも可能</div>
                     </div>
                 `;
             } else {
-                battleBtn.innerHTML = `<div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#f39c12; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手のブロック宣言を待機中...</div>`;
+                battleBtn.innerHTML = `
+                    <div style="display:flex; flex-direction:column; align-items:center; gap:10px;">
+                        ${uTriggerMsg}
+                        <div style="padding:15px 30px; font-size:20px; font-weight:bold; background-color:#f39c12; color:white; border-radius:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);">相手のブロック宣言を待機中...</div>
+                    </div>
+                `;
             }
         }
     } else {
@@ -700,9 +767,8 @@ function renderCards(side, uiPrefix) {
     if (trashList.length > 0) {
         const topCard = trashList[trashList.length - 1];
         const bg = topCard.image ? `background-image:url('${topCard.image}')` : '';
-        const safeCardJson = JSON.stringify(topCard).replace(/'/g, "&#39;");
         trashEl.innerHTML = `<div style="font-size:10px; color:white; text-align:center; margin-bottom:2px;">トラッシュ(${trashList.length})</div>
-        <div class="card ${topCard.color}" style="${bg}; position:relative; margin:0 auto; cursor:pointer;" onmouseenter='showDetail(${safeCardJson})'>
+        <div class="card ${topCard.color}" style="${bg}; position:relative; margin:0 auto; cursor:pointer;" onmouseenter="showDetail(state['${side}'].cardTrash[${trashList.length - 1}])">
             <div class="cost-badge">${topCard.cost}</div>
             <div style="position:absolute; bottom:5px; width:100%; text-align:center; font-size:10px; font-weight:bold; color:white; text-shadow:1px 1px 2px black; pointer-events:none;">${topCard.name}</div>
         </div>`;
@@ -714,8 +780,7 @@ function renderCards(side, uiPrefix) {
     handEl.innerHTML = (state[side].hand || []).map((c, i) => {
         if (!isMe) return `<div class="card" style="background:#222; border-color:#444;"></div>`;
         const bg = c.image ? `background-image:url('${c.image}')` : '';
-        const safeCardJson = JSON.stringify(c).replace(/'/g, "&#39;");
-        return `<div class="card ${c.color}" style="${bg}" onclick="onCardClick('${side}', ${i}, 'hand')" onmouseenter='showDetail(${safeCardJson})'>
+        return `<div class="card ${c.color}" style="${bg}" onclick="onCardClick('${side}', ${i}, 'hand')" onmouseenter="showDetail(state['${side}'].hand[${i}])">
             <div class="cost-badge">${c.cost}</div>
             <div class="bp-main" style="font-size:9px; top:35px;">${c.name}</div>
         </div>`;
@@ -724,7 +789,6 @@ function renderCards(side, uiPrefix) {
     fieldEl.innerHTML = (state[side].field || []).map((c, i) => {
         const bg = c.image ? `background-image:url('${c.image}')` : '';
         const stats = getCardStats(c, side, state);
-        const safeCardJson = JSON.stringify(c).replace(/'/g, "&#39;");
         
         let borderStyle = "";
         if (state.battle.isAttacking && state.battle.attackerIdx === i && side === state.currentTurn) {
@@ -742,7 +806,7 @@ function renderCards(side, uiPrefix) {
             statsDisp = `Lv${stats.lv} ${stats.bpDisp}`;
         }
 
-        return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg} ${borderStyle}" onclick="onCardClick('${side}', ${i}, 'field')" onmouseenter='showDetail(${safeCardJson})'>
+        return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="${bg} ${borderStyle}" onclick="onCardClick('${side}', ${i}, 'field')" onmouseenter="showDetail(state['${side}'].field[${i}])">
             <div class="cost-badge">${c.cost}</div>
             <div class="core-display">● ${c.cores}</div>
             <div style="position:absolute; top:35%; width:100%; text-align:center; font-size:12px; font-weight:bold; color:white; text-shadow:1px 1px 2px black, 0px 0px 3px black; pointer-events:none;">${statsDisp}</div>
@@ -774,8 +838,14 @@ function showDetail(card) {
     
     const lvBody = document.getElementById('d-lv-body');
     if(lvBody) {
-        if(card.lvCosts) lvBody.innerHTML = card.lvCosts.map((cost, i) => `<tr><td>Lv${i+1}</td><td>${cost}</td><td>${card.bp ? card.bp[i] : '-'}</td></tr>`).join('');
-        else lvBody.innerHTML = "<tr><td colspan='3'>なし</td></tr>";
+        if(card.lvCosts) {
+            lvBody.innerHTML = card.lvCosts.map((cost, i) => {
+                const lvName = card.lvNames ? card.lvNames[i] : i + 1;
+                return `<tr><td>Lv${lvName}</td><td>${cost}</td><td>${card.bp ? card.bp[i] : '-'}</td></tr>`;
+            }).join('');
+        } else {
+            lvBody.innerHTML = "<tr><td colspan='3'>なし</td></tr>";
+        }
     }
 }
 
