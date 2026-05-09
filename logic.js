@@ -267,7 +267,6 @@ function takeLifeDamage() {
             hasBlocker = state[me].field.some(c => c.type === 'spirit' && !c.isExhausted);
         }
         if (hasBlocker) {
-            alert("Uトリガーがヒットしています！回復状態のスピリットがいるため、必ずブロックしなければなりません！");
             return;
         }
     }
@@ -760,7 +759,6 @@ function updateUI() {
             <div style="background-color: ${hitColor}; padding:10px; border-radius:5px; margin-bottom:10px; color:white; text-align:center;">
                 <div style="font-weight:bold; font-size:16px;">${hitText}</div>
                 <div style="font-size:12px;">相手のデッキ: ${t.cardName} (コスト${t.cardCost}) vs ゴラドン (コスト${t.myCost})</div>
-                <div style="font-size:10px; margin-top:5px;">※ヒット時、相手は可能ならブロックしなければなりません</div>
             </div>
         `;
     }
@@ -798,11 +796,27 @@ function updateUI() {
             }
         } else if (state.battle.status === 'block_declare') {
             if (isDefender) {
+                let forcedBlockMsg = "";
+                let canTakeLife = true;
+                const attackerCard = state[opp].field[state.battle.attackerIdx];
+                if (state.battle.uTriggerHit && attackerCard && attackerCard.id === 'ultimate_goradon') {
+                    const hasBlocker = state[me].field && state[me].field.some(c => c.type === 'spirit' && !c.isExhausted);
+                    if (hasBlocker) {
+                        canTakeLife = false;
+                        forcedBlockMsg = '<div style="color: #f1c40f; font-weight: bold; margin-bottom: 5px;">※Uトリガーヒット中！回復状態のスピリットでブロックしてください</div>';
+                    }
+                }
+
+                const lifeBtnHtml = canTakeLife 
+                    ? '<button onclick="takeLifeDamage()" style="padding:10px 20px; font-size:14px; background-color:#e74c3c; color:white; border:none; border-radius:5px; cursor:pointer;">ライフで受ける</button>'
+                    : '<button disabled style="padding:10px 20px; font-size:14px; background-color:#7f8c8d; color:#bdc3c7; border:none; border-radius:5px; cursor:not-allowed;">ライフで受けられない</button>';
+
                 battleBtn.innerHTML = `
                     <div style="display:flex; flex-direction:column; align-items:center; gap:10px; background-color:rgba(192, 57, 43, 0.9); padding:20px; border-radius:10px; box-shadow: 0 4px 10px rgba(0,0,0,0.7);">
                         ${uTriggerMsg}
+                        ${forcedBlockMsg}
                         <div style="font-size:18px; font-weight:bold; color:#fff;">ブロック宣言ステップ</div>
-                        <button onclick="takeLifeDamage()" style="padding:10px 20px; font-size:14px; background-color:#e74c3c; color:white; border:none; border-radius:5px; cursor:pointer;">ライフで受ける</button>
+                        ${lifeBtnHtml}
                         <div style="font-size:12px; color:#ddd;">※スピリットをクリックしてブロックも可能</div>
                     </div>
                 `;
@@ -863,9 +877,11 @@ function renderCards(side, uiPrefix) {
             <div class="cost-badge">${topCard.cost}</div>
             <div style="position:absolute; bottom:5px; width:100%; text-align:center; font-size:10px; font-weight:bold; color:white; text-shadow:1px 1px 2px black; pointer-events:none;">${topCard.name}</div>
         </div>`;
+        trashEl.onmouseenter = () => showDetail(topCard);
     } else {
         trashEl.innerHTML = `<div style="font-size:10px; color:white; text-align:center; margin-bottom:2px;">トラッシュ(0)</div>
         <div style="width:60px; height:80px; border:1px dashed #7f8c8d; display:flex; align-items:center; justify-content:center; color:#7f8c8d; font-size:10px; margin:0 auto;">空</div>`;
+        trashEl.onmouseenter = null;
     }
 
     handEl.innerHTML = (state[side].hand || []).map((c, i) => {
