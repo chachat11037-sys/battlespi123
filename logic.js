@@ -63,7 +63,7 @@ function initOnlineGame() {
     ['p1', 'p2'].forEach(p => {
         const deckSource = Array(40).fill(0).map(() => {
             const randCard = CARD_DB[Math.floor(Math.random() * CARD_DB.length)];
-            return { ...randCard, id: Math.random(), cores: 0, isExhausted: false };
+            return { ...randCard, id: Math.random(), cores: 0, isExhausted: false, tempBpBonus: 0 };
         });
         deckSource.sort(() => Math.random() - 0.5);
         for(let i=0; i<4; i++) state[p].hand.push(deckSource.pop());
@@ -107,6 +107,12 @@ function getCardStats(card) {
             }
         }
     }
+    
+    if (card.tempBpBonus) {
+        currentBpNum += card.tempBpBonus;
+        currentBpDisp = currentBpNum.toString();
+    }
+    
     return { lv: currentLv, bpDisp: currentBpDisp, bpNum: currentBpNum };
 }
 
@@ -121,6 +127,7 @@ function destroyCard(side, idx) {
     const destroyed = state[side].field.splice(idx, 1)[0];
     state[side].reserve += destroyed.cores;
     destroyed.cores = 0;
+    destroyed.tempBpBonus = 0;
     state[side].cardTrash.push(destroyed);
 
     if (destroyed.effects) {
@@ -159,6 +166,10 @@ function resolveBattle(blockerIdx) {
         destroyCard(attackerSide, attackerIdx);
     }
 
+    if (state[attackerSide].field[attackerIdx]) {
+        state[attackerSide].field[attackerIdx].tempBpBonus = 0;
+    }
+
     state.battle.isAttacking = false;
     state.battle.attackerIdx = null;
     syncToFirebase();
@@ -172,6 +183,8 @@ function takeLifeDamage() {
     
     const dmg = attackerCard.symbols || 1;
     state[me].life -= dmg;
+    
+    attackerCard.tempBpBonus = 0;
     
     state.battle.isAttacking = false;
     state.battle.attackerIdx = null;
@@ -294,6 +307,7 @@ function onCardClick(side, idx, type) {
             state[side].trash += cost;
             const summoned = state[side].hand.splice(idx, 1)[0];
             summoned.cores = minCore;
+            summoned.tempBpBonus = 0;
             
             if (!state[side].field) state[side].field = [];
             state[side].field.push(summoned);
@@ -305,7 +319,17 @@ function onCardClick(side, idx, type) {
         if (steps[state.currentStep] === "アタック") {
             if (state.currentTurn === state.myRole && side === state.myRole) {
                 if (!state[side].field[idx].isExhausted && !state.battle.isAttacking) {
-                    state[side].field[idx].isExhausted = true;
+                    const attackingCard = state[side].field[idx];
+                    attackingCard.isExhausted = true;
+                    
+                    if (attackingCard.effects) {
+                        attackingCard.effects.forEach(eff => {
+                            if (eff.timing === 'attack' && eff.type === 'self_bp_up') {
+                                attackingCard.tempBpBonus = eff.value;
+                            }
+                        });
+                    }
+                    
                     state.battle.isAttacking = true;
                     state.battle.attackerIdx = idx;
                     syncToFirebase();
@@ -368,7 +392,10 @@ function handleNextStep() {
     }
     if (steps[state.currentStep] === "リフレッシュ") {
         if (state[p].field) {
-            state[p].field.forEach(c => c.isExhausted = false);
+            state[p].field.forEach(c => {
+                c.isExhausted = false;
+                c.tempBpBonus = 0;
+            });
         }
         state[p].reserve += (state[p].trash || 0);
         state[p].trash = 0;
