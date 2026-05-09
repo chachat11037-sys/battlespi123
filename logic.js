@@ -91,7 +91,7 @@ function getReduction(card, mySyms) {
     return Math.min(rRed, mySyms.red) + Math.min(rBlue, mySyms.blue);
 }
 
-function getCardStats(card) {
+function getCardStats(card, side, currentState) {
     let currentLv = 1;
     let currentBpNum = 0;
     let currentBpDisp = "-";
@@ -110,8 +110,27 @@ function getCardStats(card) {
     
     if (card.tempBpBonus) {
         currentBpNum += card.tempBpBonus;
-        currentBpDisp = currentBpNum.toString();
     }
+
+    if (currentState && side && currentState[side] && currentState[side].field) {
+        if (card.effects) {
+            card.effects.forEach(eff => {
+                if (eff.timing === 'constant' && eff.type === 'bp_up_if_keyword') {
+                    if (steps[currentState.currentStep] === eff.step) {
+                        const hasKeyword = currentState[side].field.some(otherCard => {
+                            if (otherCard === card) return false;
+                            return otherCard.effects && otherCard.effects.some(e => eff.keywords.some(kw => e.text.includes(`【${kw}】`)));
+                        });
+                        if (hasKeyword) {
+                            currentBpNum += eff.value;
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    currentBpDisp = currentBpNum.toString();
     
     return { lv: currentLv, bpDisp: currentBpDisp, bpNum: currentBpNum };
 }
@@ -154,8 +173,8 @@ function resolveBattle(blockerIdx) {
     const attacker = state[attackerSide].field[attackerIdx];
     const blocker = state[defenderSide].field[blockerIdx];
 
-    const aStats = getCardStats(attacker);
-    const bStats = getCardStats(blocker);
+    const aStats = getCardStats(attacker, attackerSide, state);
+    const bStats = getCardStats(blocker, defenderSide, state);
 
     if (aStats.bpNum > bStats.bpNum) {
         destroyCard(defenderSide, blockerIdx);
@@ -202,7 +221,7 @@ function onCardClick(side, idx, type) {
             if (!targetCard) return;
 
             if (state.pendingEffect.type === 'destroy_bp') {
-                const stats = getCardStats(targetCard);
+                const stats = getCardStats(targetCard, side, state);
                 if (stats.bpNum > 0 && stats.bpNum <= state.pendingEffect.value) {
                     destroyCard(side, idx);
                     state.pendingEffect = null;
@@ -517,7 +536,7 @@ function renderCards(side, uiPrefix) {
 
     fieldEl.innerHTML = (state[side].field || []).map((c, i) => {
         const bg = c.image ? `background-image:url('${c.image}')` : '';
-        const stats = getCardStats(c);
+        const stats = getCardStats(c, side, state);
         const safeCardJson = JSON.stringify(c).replace(/'/g, "&#39;");
         
         let borderStyle = "";
