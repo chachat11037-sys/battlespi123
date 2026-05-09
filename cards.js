@@ -21,6 +21,20 @@ const CARD_DB = [
         ]
     },
     {
+        id: "spirit_rocceratops",
+        name: "ロクケラトプス",
+        type: "spirit",
+        color: "red",
+        family: "地竜",
+        cost: 1,
+        reduction: 1,
+        symbols: 1,
+        lvCosts: [1, 2, 3],
+        bp: [1000, 3000, 4000],
+        image: "images/rocceratops.jpg",
+        effects: []
+    },
+    {
         id: "magic_doubledraw",
         name: "ダブルドロー",
         type: "magic",
