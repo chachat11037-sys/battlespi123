@@ -160,6 +160,11 @@ function onCardClick(side, idx, type) {
     if (side !== state.myRole || !state[side]) return; 
     
     if (type === 'hand') {
+        if (state.currentTurn !== state.myRole || steps[state.currentStep] !== "メイン") {
+            alert("召喚は自分のメインステップでのみ可能です！");
+            return;
+        }
+
         const card = state[side].hand[idx];
         if (!card || card.type === 'magic') return;
 
@@ -218,16 +223,18 @@ function onCardClick(side, idx, type) {
                 }
             }
         }
-        
-        if (!state.battle.isAttacking) {
-            state[side].field[idx].isExhausted = !state[side].field[idx].isExhausted;
-        }
     }
     syncToFirebase();
 }
 
 function changeCore(side, idx, amt) {
     if (side !== state.myRole || !state[side] || !state[side].field || !state[side].field[idx]) return;
+    
+    if (state.currentTurn !== state.myRole || steps[state.currentStep] !== "メイン") {
+        alert("コアの移動は自分のメインステップでのみ可能です！");
+        return;
+    }
+
     const c = state[side].field[idx];
     if (amt > 0 && state[side].reserve > 0) {
         c.cores++; state[side].reserve--;
