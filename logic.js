@@ -103,15 +103,47 @@ function getCardStats(card, side, currentState) {
             }
         }
     }
+    
     if (card.tempBpBonus) currentBpNum += card.tempBpBonus;
     if (card.turnBpBonus) currentBpNum += card.turnBpBonus;
-    if (currentState && side && currentState[side] && currentState[side].field && card.type === 'spirit' && card.color === 'red') {
-        currentState[side].field.forEach(otherCard => {
-            if (otherCard.id === 'nexus_hunting_village') {
-                if (steps[currentState.currentStep] === "アタック" && currentState.currentTurn === side) currentBpNum += 2000;
-            }
-        });
+    
+    // ネクサスの常時効果など、フィールド全体からのBP計算を復元
+    if (currentState && side && currentState[side] && currentState[side].field) {
+        if (card.effects) {
+            card.effects.forEach(eff => {
+                if (eff.timing === 'constant' && eff.type === 'bp_up_if_keyword') {
+                    if (steps[currentState.currentStep] === eff.step) {
+                        const hasKeyword = currentState[side].field.some(otherCard => {
+                            if (otherCard === card) return false;
+                            return otherCard.effects && otherCard.effects.some(e => eff.keywords.some(kw => e.text.includes(`【${kw}】`)));
+                        });
+                        if (hasKeyword) currentBpNum += eff.value;
+                    }
+                }
+            });
+        }
+
+        if (card.type === 'spirit' && card.color === 'red') {
+            currentState[side].field.forEach(otherCard => {
+                if (otherCard.type === 'nexus' && otherCard.effects) {
+                    let nLv = 1;
+                    if (otherCard.lvCosts) {
+                        for (let i = otherCard.lvCosts.length - 1; i >= 0; i--) {
+                            if (otherCard.cores >= otherCard.lvCosts[i]) { nLv = i + 1; break; }
+                        }
+                    }
+                    otherCard.effects.forEach(eff => {
+                        if (eff.timing === 'constant' && eff.type === 'global_bp_up_red_spirit') {
+                            if (nLv >= eff.reqLv && steps[currentState.currentStep] === eff.step && state.currentTurn === side) {
+                                currentBpNum += eff.value;
+                            }
+                        }
+                    });
+                }
+            });
+        }
     }
+
     if (card.type !== 'nexus') currentBpDisp = currentBpNum.toString();
     return { lv: currentLvDisp, lvIdx: currentLvIdx, bpDisp: currentBpDisp, bpNum: currentBpNum };
 }
@@ -121,8 +153,11 @@ function destroyCard(side, idx) {
     state[side].reserve += destroyed.cores;
     const trashCard = JSON.parse(JSON.stringify(destroyed));
     trashCard.cores = 0; trashCard.isExhausted = false;
+    
     if (!state[side].cardTrash) state[side].cardTrash = [];
     state[side].cardTrash.push(trashCard);
+    
+    // ボルガメスなどの破壊時効果を発動
     if (destroyed.effects) {
         destroyed.effects.forEach(eff => {
             if (eff.timing === 'destroyed' && eff.type === 'destroy_bp') {
@@ -136,15 +171,31 @@ function takeLifeDamage() {
     const me = state.myRole; const opp = getOppSide();
     if (state.currentTurn === me || !state.battle.isAttacking || state.battle.status !== 'block_declare') return;
     const attackerCard = state[opp].field[state.battle.attackerIdx];
+    
     if (state.battle.uTriggerHit && attackerCard && attackerCard.id === 'ultimate_goradon') {
         if (state[me].field.some(c => c.type === 'spirit' && !c.isExhausted)) return alert("Uトリガーヒット！回復スピリットでブロックしてください！");
     }
+    
     state[me].life -= (attackerCard.symbols || 1);
+    
     if (state[me].field) {
         state[me].field.forEach(c => {
-            if (c.id === 'nexus_hunting_village' && c.cores >= 2) state.pendingEffect = { player: me, type: 'destroy_bp', value: 4000, text: `集落の効果：相手のBP4000以下を1体破壊` };
+            if (c.type === 'nexus' && c.effects) {
+                let nLv = 1;
+                if (c.lvCosts) {
+                    for (let i = c.lvCosts.length - 1; i >= 0; i--) {
+                        if (c.cores >= c.lvCosts[i]) { nLv = i + 1; break; }
+                    }
+                }
+                c.effects.forEach(eff => {
+                    if (eff.timing === 'on_life_decrease' && state.currentTurn !== me && nLv >= eff.reqLv) {
+                        state.pendingEffect = { player: me, type: 'destroy_bp', value: eff.value, text: `${c.name}の効果：相手のBP${eff.value}以下を1体破壊` };
+                    }
+                });
+            }
         });
     }
+    
     state.battle = getInitialState().battle;
     syncToFirebase();
 }
@@ -166,17 +217,21 @@ function resolveBattle() {
     const attackerSide = state.currentTurn; const defenderSide = getOppSide();
     const attacker = state[attackerSide].field[state.battle.attackerIdx];
     const blocker = state[defenderSide].field[state.battle.blockerIdx];
+    
     if (state.battle.uTriggerHit && attacker && attacker.id === 'ultimate_goradon') {
         if (blocker && blocker.type === 'spirit' && state[defenderSide].life > 0) {
             state[defenderSide].life--; state[defenderSide].reserve++;
             alert("ゴラドンの効果：ライフを1点削りました！");
         }
     }
+    
     const aStats = getCardStats(attacker, attackerSide, state);
     const bStats = getCardStats(blocker, defenderSide, state);
+    
     if (aStats.bpNum > bStats.bpNum) destroyCard(defenderSide, state.battle.blockerIdx);
     else if (bStats.bpNum > aStats.bpNum) destroyCard(attackerSide, state.battle.attackerIdx);
     else { destroyCard(defenderSide, state.battle.blockerIdx); destroyCard(attackerSide, state.battle.attackerIdx); }
+    
     state.battle = getInitialState().battle;
     syncToFirebase();
 }
@@ -187,25 +242,36 @@ function onCardClick(side, idx, type) {
         if (type === 'field' && side !== state.myRole && state.pendingEffect.type === 'destroy_bp') {
             if (getCardStats(state[side].field[idx], side, state).bpNum <= state.pendingEffect.value) {
                 destroyCard(side, idx); state.pendingEffect = null; syncToFirebase();
+            } else {
+                alert(`BP${state.pendingEffect.value}以下ではありません！`);
             }
         }
         return;
     }
+    
     if (side !== state.myRole) return;
+    
     if (type === 'hand') {
         const card = state[side].hand[idx];
+        if (card.type === 'ultimate') {
+            if (!(state[side].field || []).some(c => c.type === 'spirit' && c.color === 'red')) return alert("召喚条件：自分の赤スピリット1体以上");
+        }
         if (card.type === 'magic') {
             const isMain = state.currentTurn === side && steps[state.currentStep] === "メイン";
             const isFlash = steps[state.currentStep] === "アタック" && state.battle.flashTurn === side;
             if (!isMain && !isFlash) return alert("今はマジックを使用できません");
+            
             const syms = getSyms(side);
             const cost = Math.max(0, (card.cost || 0) - getReduction(card, syms));
             if (state[side].reserve < cost) return alert("コア不足です");
+            
             state[side].reserve -= cost; state[side].trash += cost;
+            
             if (card.id === 'magic_doubledraw') {
                 if (isMain) for(let i=0; i<2; i++) if(state[side].deck.length) state[side].hand.push(state[side].deck.pop());
                 if (isFlash) state.pendingEffect = { player: side, type: 'flash_bp_up', value: 2000, text: "BP+2000するスピリットを選択" };
             }
+            
             if (state.pendingEffect?.type !== 'flash_bp_up') {
                 state[side].cardTrash.push(state[side].hand.splice(idx, 1)[0]);
             } else {
@@ -213,11 +279,11 @@ function onCardClick(side, idx, type) {
             }
             syncToFirebase();
         } else {
-            if (steps[state.currentStep] !== "メイン") return alert("召喚はメインステップのみです");
-            if (card.type === 'ultimate' && !state[side].field.some(c => c.type === 'spirit' && c.color === 'red')) return alert("召喚条件：赤スピリット1体以上");
+            if (steps[state.currentStep] !== "メイン") return alert("召喚はメインステップのみ可能です");
             const syms = getSyms(side); const cost = Math.max(0, (card.cost || 0) - getReduction(card, syms));
             const minCore = card.lvCosts ? card.lvCosts[0] : 1;
             if (state[side].reserve < (cost + minCore)) return alert("コア不足です");
+            
             state[side].reserve -= (cost + minCore); state[side].trash += cost;
             const s = state[side].hand.splice(idx, 1)[0]; s.cores = minCore;
             state[side].field.push(s); syncToFirebase();
@@ -231,14 +297,24 @@ function onCardClick(side, idx, type) {
         } else if (steps[state.currentStep] === "アタック" && state.currentTurn === side && !card.isExhausted && !state.battle.isAttacking && card.type !== 'nexus') {
             card.isExhausted = true; let uHit = false; let uData = null;
             const stats = getCardStats(card, side, state);
-            if (card.type === 'ultimate' && stats.lv >= 4) {
-                const opp = getOppSide();
-                if (state[opp].deck.length) {
-                    const top = state[opp].deck.pop(); state[opp].cardTrash.push(top);
-                    uHit = top.cost < card.cost;
-                    uData = { cardName: top.name, cardCost: top.cost, myCost: card.cost, isHit: uHit };
-                }
+            
+            // ドラグノ偵察兵などのアタック時効果を確実に発動
+            if (card.effects) {
+                card.effects.forEach(eff => {
+                    if (eff.timing === 'attack' && eff.type === 'self_bp_up') {
+                        card.tempBpBonus = eff.value;
+                    }
+                    if (eff.timing === 'attack' && eff.type === 'u_trigger' && stats.lvIdx + 1 >= eff.reqLv) {
+                        const opp = getOppSide();
+                        if (state[opp].deck.length) {
+                            const top = state[opp].deck.pop(); state[opp].cardTrash.push(top);
+                            uHit = top.cost < card.cost;
+                            uData = { cardName: top.name, cardCost: top.cost, myCost: card.cost, isHit: uHit };
+                        }
+                    }
+                });
             }
+
             state.battle = { isAttacking: true, status: 'flash_attack', attackerIdx: idx, blockerIdx: null, flashTurn: getOppSide(), passCount: 0, uTrigger: uData, uTriggerHit: uHit };
             syncToFirebase();
         } else if (state.battle.status === 'block_declare' && state.currentTurn !== side && !card.isExhausted && card.type !== 'nexus') {
@@ -278,13 +354,13 @@ function handleNextStep() {
 
 function openTrashModal(side) {
     let m = document.getElementById('trash-modal') || document.createElement('div');
-    m.id = 'trash-modal'; m.style = "position:fixed;top:10%;left:10%;width:80%;height:80%;background:rgba(0,0,0,0.9);z-index:10000;border-radius:10px;padding:20px;overflow-y:auto;display:block;";
-    m.innerHTML = `<button onclick="this.parentElement.style.display='none'" style="float:right;background:#e74c3c;color:white;border:none;padding:10px;">閉じる</button><h2 style="color:white;">トラッシュ一覧</h2><div id="tm-cont" style="display:flex;flex-wrap:wrap;gap:10px;"></div>`;
+    m.id = 'trash-modal'; m.style = "position:fixed;top:10%;left:10%;width:80%;height:80%;background:rgba(0,0,0,0.95);z-index:10000;border-radius:10px;padding:20px;overflow-y:auto;display:block;";
+    m.innerHTML = `<button onclick="this.parentElement.style.display='none'" style="float:right;background:#e74c3c;color:white;border:none;padding:10px;cursor:pointer;">閉じる</button><h2 style="color:white;margin-bottom:20px;">トラッシュ一覧</h2><div id="tm-cont" style="display:flex;flex-wrap:wrap;gap:10px;"></div>`;
     document.body.appendChild(m);
     const cont = document.getElementById('tm-cont');
     state[side].cardTrash.forEach(c => {
         const bg = c.image ? `background-image:url('${c.image}')` : '';
-        cont.innerHTML += `<div class="card ${c.color}" style="${bg};position:relative;" onmouseenter='showDetail(${JSON.stringify(c).replace(/'/g, "&#39;")})'><div class="cost-badge">${c.cost}</div></div>`;
+        cont.innerHTML += `<div class="card ${c.color}" style="${bg};position:relative;" onmouseenter='showDetail(${JSON.stringify(c).replace(/'/g, "&#39;")})'><div class="cost-badge">${c.cost}</div><div style="position:absolute;bottom:5px;width:100%;text-align:center;font-size:10px;font-weight:bold;color:white;text-shadow:1px 1px 2px black;">${c.name}</div></div>`;
     });
 }
 
@@ -300,16 +376,16 @@ function updateUI() {
     document.body.appendChild(bBtn); bBtn.innerHTML = '';
     if (state.battle.isAttacking) {
         const t = state.battle.uTrigger;
-        let uMsg = t ? `<div style="background:${t.isHit?'#e74c3c':'#3498db'};color:white;padding:10px;border-radius:5px;margin-bottom:5px;">【Uトリガー ${t.isHit?'HIT!!':'GUARD'}】<br>${t.cardName}(コスト${t.cardCost})</div>` : '';
+        let uMsg = t ? `<div style="background:${t.isHit?'#e74c3c':'#3498db'};color:white;padding:10px;border-radius:5px;margin-bottom:5px;text-align:center;">【Uトリガー ${t.isHit?'HIT!!':'GUARD'}】<br>${t.cardName}(コスト${t.cardCost}) vs ゴラドン(${t.myCost})</div>` : '';
         if (state.battle.status.includes('flash')) {
-            if (state.battle.flashTurn === state.myRole) bBtn.innerHTML = `${uMsg}<button onclick="passFlash()" style="padding:15px;background:#34495e;color:white;border-radius:10px;">パスする</button>`;
-            else bBtn.innerHTML = `${uMsg}<div style="padding:15px;background:#7f8c8d;color:white;border-radius:10px;">相手の待機中...</div>`;
+            if (state.battle.flashTurn === state.myRole) bBtn.innerHTML = `<div style="background:rgba(41,128,185,0.9);padding:20px;border-radius:10px;text-align:center;">${uMsg}<div style="color:white;margin-bottom:10px;font-weight:bold;">フラッシュ優先権</div><button onclick="passFlash()" style="padding:10px;background:#34495e;color:white;border:radius:5px;cursor:pointer;">パスする</button></div>`;
+            else bBtn.innerHTML = `<div style="padding:15px;background:#7f8c8d;color:white;border-radius:10px;text-align:center;">${uMsg}相手の待機中...</div>`;
         } else if (state.battle.status === 'block_declare') {
             if (state.currentTurn !== state.myRole) {
                 const canLife = !(state.battle.uTriggerHit && state[me].field.some(c => c.type === 'spirit' && !c.isExhausted));
-                const msg = canLife ? "" : "<div style='color:#f1c40f;font-weight:bold;'>Uトリガーヒット！強制ブロック！</div>";
-                bBtn.innerHTML = `${uMsg}${msg}<button onclick="takeLifeDamage()" ${canLife?'':'disabled'} style="padding:15px;background:${canLife?'#e74c3c':'#7f8c8d'};color:white;border-radius:10px;">ライフで受ける</button>`;
-            } else bBtn.innerHTML = `${uMsg}<div style="padding:15px;background:#f39c12;color:white;border-radius:10px;">相手のブロック待機中...</div>`;
+                const msg = canLife ? "" : "<div style='color:#f1c40f;font-weight:bold;margin-bottom:10px;'>Uトリガーヒット！強制ブロック！</div>";
+                bBtn.innerHTML = `<div style="background:rgba(192,57,43,0.9);padding:20px;border-radius:10px;text-align:center;">${uMsg}${msg}<button onclick="takeLifeDamage()" ${canLife?'':'disabled'} style="padding:10px;background:${canLife?'#e74c3c':'#7f8c8d'};color:white;border-radius:5px;cursor:${canLife?'pointer':'not-allowed'};">ライフで受ける</button></div>`;
+            } else bBtn.innerHTML = `<div style="padding:15px;background:#f39c12;color:white;border-radius:10px;text-align:center;">${uMsg}相手のブロック待機中...</div>`;
         }
     }
     renderCards(me, 'self'); renderCards(opp, 'opp');
@@ -319,17 +395,17 @@ function updateUI() {
 function renderCards(side, uiPrefix) {
     const isMe = (uiPrefix === 'self'); const hEl = document.getElementById(uiPrefix + '-hand'); const fEl = document.getElementById(uiPrefix + '-field');
     let tr = document.getElementById(uiPrefix + '-tr') || document.createElement('div');
-    tr.id = uiPrefix + '-tr'; tr.style = `position:fixed;${isMe?'bottom':'top'}:20px;right:20px;background:rgba(0,0,0,0.8);padding:5px;border:2px solid #555;cursor:pointer;`;
+    tr.id = uiPrefix + '-tr'; tr.style = `position:fixed;${isMe?'bottom':'top'}:20px;right:20px;background:rgba(0,0,0,0.8);padding:5px;border:2px solid #555;cursor:pointer;z-index:50;`;
     tr.onclick = () => openTrashModal(side); document.body.appendChild(tr);
     const trL = state[side].cardTrash;
-    tr.innerHTML = trL.length ? `<div style="font-size:10px;color:white;text-align:center;">トラッシュ(${trL.length})</div><div class="card ${trL[trL.length-1].color}" style="background-image:url('${trL[trL.length-1].image}')"></div>` : `<div style="color:#7f8c8d;font-size:10px;">トラッシュ(0)</div>`;
+    tr.innerHTML = trL.length ? `<div style="font-size:10px;color:white;text-align:center;margin-bottom:2px;">トラッシュ(${trL.length})</div><div class="card ${trL[trL.length-1].color}" style="background-image:url('${trL[trL.length-1].image}');margin:0 auto;" onmouseenter='showDetail(${JSON.stringify(trL[trL.length-1]).replace(/'/g, "&#39;")})'><div class="cost-badge">${trL[trL.length-1].cost}</div></div>` : `<div style="color:#7f8c8d;font-size:10px;">トラッシュ(0)</div><div style="width:60px;height:80px;border:1px dashed #7f8c8d;margin:0 auto;"></div>`;
     hEl.innerHTML = state[side].hand.map((c, i) => isMe ? `<div class="card ${c.color}" style="background-image:url('${c.image}')" onclick="onCardClick('${side}',${i},'hand')" onmouseenter='showDetail(${JSON.stringify(c).replace(/'/g, "&#39;")})'><div class="cost-badge">${c.cost}</div><div class="bp-main" style="font-size:9px;top:35px;">${c.name}</div></div>` : `<div class="card" style="background:#222;"></div>`).join('');
     fEl.innerHTML = state[side].field.map((c, i) => {
         const stats = getCardStats(c, side, state);
-        const brd = (state.battle.isAttacking && state.battle.attackerIdx === i && state.currentTurn === side) ? "box-shadow: 0 0 15px 5px red;" : "";
+        const brd = (state.battle.isAttacking && state.battle.attackerIdx === i && state.currentTurn === side) ? "box-shadow: 0 0 15px 5px red;" : (state.pendingEffect && state.pendingEffect.player === state.myRole && c.type !== 'nexus') ? "box-shadow: 0 0 15px 5px #9b59b6;cursor:crosshair;" : "";
         return `<div class="card ${c.color} ${c.isExhausted?'exhausted':''}" style="background-image:url('${c.image}');${brd}" onclick="onCardClick('${side}',${i},'field')" onmouseenter='showDetail(${JSON.stringify(c).replace(/'/g, "&#39;")})'>
             <div class="cost-badge">${c.cost}</div><div class="core-display">● ${c.cores}</div>
-            <div style="position:absolute;top:35%;width:100%;text-align:center;font-size:12px;font-weight:bold;color:white;text-shadow:1px 1px 2px black;">Lv${stats.lv} ${stats.bpDisp}</div>
+            <div style="position:absolute;top:35%;width:100%;text-align:center;font-size:12px;font-weight:bold;color:white;text-shadow:1px 1px 2px black;">${c.type==='nexus'?'Lv'+stats.lv:'Lv'+stats.lv+' '+stats.bpDisp}</div>
             <div class="card-btns" style="display:${isMe?'flex':'none'}"><button onclick="event.stopPropagation(); changeCore('${side}',${i},1)">+</button><button onclick="event.stopPropagation(); changeCore('${side}',${i},-1)">-</button></div>
         </div>`;
     }).join('');
